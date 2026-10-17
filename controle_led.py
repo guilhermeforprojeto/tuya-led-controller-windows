@@ -134,17 +134,13 @@ def main():
     listener = SessionListener(lambda: config.get('led_off_shutdown', False), shutdown_off, log)
     root = tk.Tk()
     root.title('Controle LED · PC')
-    root.geometry('390x510')
-    root.resizable(False, False)
-    root.configure(bg='#f5f6f8')
-    style = ttk.Style()
-    style.theme_use('clam')
-    style.configure('TButton', padding=7)
+    from interface import setup_theme, build_panel, build_menu
+    setup_theme(root)
     frame = ttk.Frame(root, padding=18)
     frame.pack(fill='both', expand=True)
     tasks, results = queue.Queue(), queue.Queue()
     state = {'api': Tuya(config), 'colour': '#a020f0', 'busy': False}
-    status = tk.StringVar(value='Configure as credenciais para começar.' if not config['client_id'] else 'Pronto. Clique em Atualizar estado.')
+    status = tk.StringVar(value='Configure as credenciais para começar.' if not config['client_id'] else 'Escolha a cor e o brilho. Depois clique em Aplicar.')
     brightness = tk.IntVar(value=50)
     temperature = tk.IntVar(value=500)
     mode = tk.StringVar(value='colour')
@@ -226,7 +222,7 @@ def main():
         selected = colorchooser.askcolor(state['colour'], parent=root)[1]
         if selected:
             state['colour'] = selected
-            swatch.configure(bg=selected)
+            update_preview()
             mode.set('colour')
 
     def loaded(items):
@@ -244,7 +240,7 @@ def main():
                 brightness.set(max(1, round(c['v']/10)))
                 rgb = colorsys.hsv_to_rgb(c['h']/360, c['s']/1000, 1)
                 state['colour'] = '#' + ''.join(f'{round(x*255):02x}' for x in rgb)
-                swatch.configure(bg=state['colour'])
+                update_preview()
         elif current == 'white':
             brightness.set(max(1, round(values.get('bright_value_v2', 500)/10)))
         temperature.set(values.get('temp_value_v2', 500))
@@ -306,28 +302,7 @@ def main():
         ttk.Button(box, text='Salvar e testar conexão', command=save).pack(fill='x')
         ttk.Label(box, text='As chaves ficam em um arquivo local no seu perfil.').pack(pady=(10, 0))
 
-    ttk.Label(frame, text='Controle LED', font=('Segoe UI', 20, 'bold')).pack(anchor='w')
-    ttk.Label(frame, textvariable=power).pack(anchor='w', pady=(0, 12))
-    row = ttk.Frame(frame)
-    row.pack(fill='x')
-    ttk.Button(row, text='Ligar', command=lambda: set_power(True)).pack(side='left', expand=True, fill='x')
-    ttk.Button(row, text='Desligar', command=lambda: set_power(False)).pack(side='left', expand=True, fill='x', padx=(8, 0))
-    row = ttk.Frame(frame)
-    row.pack(fill='x', pady=12)
-    ttk.Radiobutton(row, text='Cor RGB', variable=mode, value='colour').pack(side='left')
-    ttk.Radiobutton(row, text='Branco', variable=mode, value='white').pack(side='left', padx=15)
-    swatch = tk.Button(row, text='Escolher cor', bg=state['colour'], fg='white', command=pick)
-    swatch.pack(side='right')
-    ttk.Label(frame, text='Brilho').pack(anchor='w')
-    tk.Scale(frame, from_=1, to=100, orient='horizontal', variable=brightness, relief='flat').pack(fill='x')
-    ttk.Label(frame, text='Branco: quente → frio').pack(anchor='w', pady=(8, 0))
-    tk.Scale(frame, from_=0, to=1000, orient='horizontal', variable=temperature, relief='flat').pack(fill='x')
-    ttk.Button(frame, text='Aplicar cor / branco e brilho', command=apply).pack(fill='x', pady=(10, 8))
-    row = ttk.Frame(frame)
-    row.pack(fill='x')
-    ttk.Button(row, text='Atualizar estado', command=refresh).pack(side='left')
-    ttk.Button(row, text='Configuração', command=settings).pack(side='right')
-    ttk.Label(frame, textvariable=status, wraplength=350).pack(anchor='w', pady=(10, 0))
+    update_preview = build_panel(frame, state, brightness, temperature, mode, power, status, pick, apply, set_power)
 
     def show():
         root.deiconify()
@@ -339,6 +314,8 @@ def main():
         icon.stop()
         tasks.put(None)
         root.destroy()
+
+    build_menu(root, settings, refresh, root.withdraw, quit_app)
 
     img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)

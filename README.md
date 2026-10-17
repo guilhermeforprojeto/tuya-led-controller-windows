@@ -13,6 +13,10 @@ Controle fitas LED Wi-Fi Tuya e Smart Life pelo computador Windows: ligar/deslig
 
 Projeto independente, sem vínculo oficial com Tuya, ASUS ou Google. A integração com Armoury Crate / Aura Sync **não está implementada**.
 
+## Interface
+
+Tema escuro, prévia da seleção, paleta de cores, barra de brilho com preenchimento lilás e puxador circular e botão de aplicar destacado. O rodapé inclui o crédito clicável da System Bee Solutions. A tela principal concentra os ajustes de iluminação. **Arquivo** reúne minimizar para a bandeja e sair; **Opções** reúne configurações e atualização do estado. A prévia é ilustrativa; a aparência física depende da fita.
+
 ## Recursos
 
 - Ligar e desligar sem trocar a cor atual.
@@ -59,7 +63,7 @@ Também há um workflow em **Actions → Build Windows** que gera o EXE como art
 
 ## Primeira abertura
 
-Em **Configuração**, preencha:
+Em **Opções → Configurações**, preencha:
 
 | Campo | Onde encontrar |
 | --- | --- |
@@ -72,13 +76,13 @@ Clique em **Salvar e testar conexão**. Depois:
 1. Clique em **Ligar**.
 2. Escolha **Cor RGB** ou **Branco**.
 3. Ajuste cor, brilho e, no modo branco, temperatura.
-4. Clique em **Aplicar cor / branco e brilho**.
+4. Clique no botão destacado **Aplicar cor e brilho** (ou **Aplicar branco e brilho**).
 
-**Aplicar** também liga a fita. O botão **Atualizar estado** somente consulta; **Ligar/Desligar** preserva o modo e a cor. O ajuste de temperatura precisa dos canais de branco da fita, não apenas de um controlador anunciado como RGBCCT.
+**Aplicar** também liga a fita. O menu **Opções → Atualizar estado da fita** somente consulta; **Ligar/Desligar** preserva o modo e a cor. O ajuste de temperatura precisa dos canais de branco da fita, não apenas de um controlador anunciado como RGBCCT.
 
 ## Iniciar com o Windows e desligar os LEDs com o PC
 
-Em **Configuração**, as opções são independentes:
+Em **Opções → Configurações**, as opções são independentes:
 
 | Opção | Comportamento |
 | --- | --- |
