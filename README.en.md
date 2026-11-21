@@ -24,7 +24,8 @@ The UI is in Portuguese. No prebuilt binary is included in the source package. T
 - Startup occurs after user login. Closing the window keeps the tray app running; **Sair** exits.
 - LED power-on at startup is optional. Disabled means no change to the existing LED state.
 - Shutdown/restart power-off is best effort, limited to about three seconds. It requires the app running and working internet. It cannot handle forced termination or power loss.
-- No Bluetooth, offline LAN control, Google Home API or Armoury Crate/Aura Sync integration.
+- Optional motherboard and RAM sync through the [OpenRGB](https://openrgb.org/) SDK server (port 6742). Disable Armoury Crate lighting, run OpenRGB as administrator for RAM, start its SDK server, then enable **Sincronizar placa-mãe e memórias** in **Configuração**. The Armoury Crate Aura SDK is not used: current versions enumerate no devices.
+- No Bluetooth, offline LAN control or Google Home API.
 - API access is subject to Tuya's quotas, expiry and commercial terms.
 
 Tests use mocks. Native Windows behavior and real application-to-device communication still require hardware validation. This is an independent project, not an official Tuya application.

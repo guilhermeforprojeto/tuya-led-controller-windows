@@ -92,6 +92,7 @@ def main():
     from tkinter import ttk, colorchooser, messagebox
     import pystray
     from windows_integration import SessionListener, startup_enabled, set_startup
+    from pc_rgb import PcLighting, find_openrgb, launch_openrgb
     startup_launch = '--startup' in sys.argv
     mutex = None
     if os.name == 'nt':
@@ -105,11 +106,21 @@ def main():
     folder = Path(os.environ.get('APPDATA', str(Path.home()))) / 'ControleLED'
     folder.mkdir(parents=True, exist_ok=True)
     config_path = folder / 'config.json'
-    config = {'client_id': '', 'secret': '', 'device_id': DEVICE, 'led_on_start': False, 'led_off_shutdown': False}
+    config = {'client_id': '', 'secret': '', 'device_id': DEVICE, 'led_on_start': False,
+              'led_off_shutdown': False, 'pc_sync': False, 'last': {}}
     try:
         config.update(json.loads(config_path.read_text(encoding='utf-8')))
     except (OSError, ValueError):
         pass
+
+    def tuya_ready():
+        return all(config.get(k) for k in ('client_id', 'secret', 'device_id'))
+
+    def save_config(data):
+        temp = config_path.with_suffix('.tmp')
+        temp.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        temp.replace(config_path)
+
     def log(message):
         try:
             with (folder / 'eventos.log').open('a', encoding='utf-8') as f:
@@ -118,7 +129,13 @@ def main():
             pass
 
     def shutdown_off():
-        if not all(config.get(k) for k in ('client_id', 'secret', 'device_id')):
+        if config.get('pc_sync'):
+            try:
+                state['pc'].off((0, 1))  # local e rápido: vem antes da nuvem
+                log('Desligamento: LEDs do PC apagados.')
+            except Exception as exc:
+                log('Desligamento: falha no OpenRGB: ' + str(exc))
+        if not tuya_ready():
             return
         try:
             api = Tuya(config)
@@ -139,12 +156,52 @@ def main():
     frame = ttk.Frame(root, padding=18)
     frame.pack(fill='both', expand=True)
     tasks, results = queue.Queue(), queue.Queue()
-    state = {'api': Tuya(config), 'colour': '#a020f0', 'busy': False}
-    status = tk.StringVar(value='Configure as credenciais para começar.' if not config['client_id'] else 'Escolha a cor e o brilho. Depois clique em Aplicar.')
-    brightness = tk.IntVar(value=50)
-    temperature = tk.IntVar(value=500)
-    mode = tk.StringVar(value='colour')
-    power = tk.StringVar(value='Estado ainda não consultado')
+    def openrgb_launcher():
+        exe = find_openrgb(config.get('openrgb_path'))
+        if not exe:
+            raise OSError('OpenRGB.exe não encontrado')
+        log('Abrindo OpenRGB: ' + exe)
+        launch_openrgb(exe)
+
+    from types import SimpleNamespace
+    from effects import EFFECTS, SPEEDS, tuya_scene
+
+    # Seleção salva por aba: cor, branco ou efeito, com brilho e velocidade.
+    last = config.get('last') or {}
+    default = {'mode': last.get('mode', 'colour'), 'colour': last.get('colour', '#a020f0'),
+               'brightness': last.get('brightness', 50), 'temperature': last.get('temperature', 500),
+               'effect': 'breathing', 'speed': 'medium'}
+    selections = {key: dict(default, **(config.get('selections') or {}).get(key, {}))
+                  for key in ('all', 'strip', 'board', 'ram')}
+    state = {'api': Tuya(config), 'pc': PcLighting(launcher=openrgb_launcher), 'busy': False,
+             'loading': False}
+    ready = tuya_ready() or config.get('pc_sync')
+    v = SimpleNamespace(
+        target=tk.StringVar(value='all'),
+        mode=tk.StringVar(), colour=tk.StringVar(), brightness=tk.IntVar(),
+        temperature=tk.IntVar(), effect=tk.StringVar(), speed=tk.StringVar(),
+        pc_sync=tk.BooleanVar(value=config.get('pc_sync', False)),
+        power=tk.StringVar(value='Fita: estado não consultado'),
+        status=tk.StringVar(value='Escolha a aba, a cor ou o efeito e clique em Aplicar.' if ready
+                            else 'Configure as credenciais para começar.'))
+    status, power = v.status, v.power
+    SEL_KEYS = ('mode', 'colour', 'brightness', 'temperature', 'effect', 'speed')
+
+    def load_selection(*_):
+        state['loading'] = True
+        sel = selections[v.target.get()]
+        for key in SEL_KEYS:
+            getattr(v, key).set(sel[key])
+        state['loading'] = False
+
+    def store_selection(*_):
+        if not state['loading']:
+            selections[v.target.get()] = {key: getattr(v, key).get() for key in SEL_KEYS}
+
+    load_selection()
+    v.target.trace_add('write', load_selection)
+    for key in SEL_KEYS:
+        getattr(v, key).trace_add('write', store_selection)
 
     def worker():
         while True:
@@ -159,15 +216,75 @@ def main():
 
     threading.Thread(target=worker, daemon=True).start()
 
-    def submit(func, callback=None):
+    def submit(func, callback=None, needs_tuya=False):
         if state['busy']:
             return
-        if not config['client_id'] or not config['secret'] or not config['device_id']:
+        if not tuya_ready() and (needs_tuya or not config.get('pc_sync')):
             settings()
             return
         state['busy'] = True
-        status.set('Comunicando com a Tuya…')
+        status.set('Enviando comando…')
         tasks.put((func, callback))
+
+    PARTS = {'all': ('strip', 'board', 'ram'), 'strip': ('strip',),
+             'board': ('board',), 'ram': ('ram',)}
+    PC_TYPES = {'board': 0, 'ram': 1}
+    NAMES = {'strip': 'fita', 'board': 'placa-mãe', 'ram': 'memórias'}
+
+    def active_parts(target):
+        return [part for part in PARTS[target]
+                if (part == 'strip' and tuya_ready()) or (part != 'strip' and config.get('pc_sync'))]
+
+    def tuya_commands(sel):
+        mode = sel['mode']
+        if mode == 'effect' and sel['effect'] != 'static':
+            return [command('switch_led', True), command('work_mode', 'scene'),
+                    command('scene_data_v2', tuya_scene(sel['effect'], sel['colour'],
+                                                        sel['brightness'], sel['speed']))]
+        if mode == 'white':
+            return [command('switch_led', True), command('work_mode', 'white'),
+                    command('bright_value_v2', max(10, sel['brightness']*10)),
+                    command('temp_value_v2', sel['temperature'])]
+        return [command('switch_led', True), command('work_mode', 'colour'),
+                command('colour_data_v2', colour_value(sel['colour'], sel['brightness']))]
+
+    def make_job(parts, sel_for, power_on=None):
+        """Monta o trabalho do worker. sel_for(part) devolve a seleção da parte.
+        Os dados são copiados aqui, na thread da interface."""
+        steps = []
+        if 'strip' in parts:
+            cmds = ([command('switch_led', power_on)] if power_on is not None
+                    else tuya_commands(sel_for('strip')))
+            steps.append(('fita', lambda c=cmds: state['api'].send(c)))
+        for part in ('board', 'ram'):
+            if part in parts:
+                types = (PC_TYPES[part],)
+                if power_on is False:
+                    steps.append((NAMES[part], lambda t=types: state['pc'].off(t)))
+                else:
+                    sel = dict(sel_for(part))
+                    steps.append((NAMES[part], lambda t=types, s=sel: state['pc'].apply_selection(s, t)))
+
+        def job():
+            done, errors = [], []
+            for name, step in steps:
+                try:
+                    step()
+                    done.append(name)
+                except Exception as exc:
+                    errors.append(f'{name}: {exc}')
+            if errors and not done:
+                raise RuntimeError('\n'.join(errors))
+            return done, errors
+        return job
+
+    def report(result):
+        done, errors = result
+        text = 'Aplicado: ' + ', '.join(done) + '.'
+        if errors:
+            text += ' Aviso: ' + ' '.join(errors)
+            log(text)
+        status.set(text)
 
     def poll():
         try:
@@ -179,8 +296,7 @@ def main():
                         status.set('Falha ao ligar na inicialização. Use Ligar para tentar novamente.')
                         log('Inicialização: ' + error)
                     else:
-                        power.set('Ligada')
-                        status.set('Fita ligada na inicialização.')
+                        report(value)
                     continue
                 if cb == 'show':
                     show()
@@ -189,65 +305,93 @@ def main():
                     quit_app()
                     return
                 if cb == 'power':
-                    set_power(value)
+                    set_power(value, 'all')
                     continue
                 state['busy'] = False
                 if error:
                     status.set(error)
                     messagebox.showerror('Controle LED', error, parent=root)
                 else:
-                    status.set('Comando aceito pela Tuya.' if cb is None else 'Estado atualizado.')
+                    status.set('Comando aceito.' if cb is None else 'Estado atualizado.')
                     if cb:
                         cb(value)
         except queue.Empty:
             pass
         root.after(100, poll)
 
-    def set_power(value):
-        api = state['api']
-        submit(lambda: api.send([command('switch_led', value)]),
-               lambda _: power.set('Ligada' if value else 'Desligada'))
+    def nothing_to_control():
+        status.set('Nada para controlar nesta aba. Configure a Tuya ou ative a placa-mãe e memórias.')
+
+    def set_power(value, target=None):
+        target = target or v.target.get()
+        parts = active_parts(target)
+        if not parts:
+            return nothing_to_control()
+
+        def done(result):
+            if 'strip' in parts:
+                power.set('Fita: ligada' if value else 'Fita: desligada')
+            report(result)
+        # Ligar no PC restaura a seleção salva de cada parte.
+        submit(make_job(parts, lambda part: selections[part], value), done)
+
+    def remember():
+        config['selections'] = selections
+        try:
+            save_config(config)
+        except OSError:
+            pass
 
     def apply():
-        cmds = [command('switch_led', True), command('work_mode', mode.get())]
-        if mode.get() == 'colour':
-            cmds.append(command('colour_data_v2', colour_value(state['colour'], brightness.get())))
-        else:
-            cmds.extend([command('bright_value_v2', max(10, brightness.get()*10)),
-                         command('temp_value_v2', temperature.get())])
-        api = state['api']
-        submit(lambda: api.send(cmds), lambda _: power.set('Ligada'))
+        target = v.target.get()
+        parts = active_parts(target)
+        if not parts:
+            return nothing_to_control()
+        sel = dict(selections[target])
+        if target == 'all':
+            # O Geral vira a seleção de todas as abas.
+            for part in ('strip', 'board', 'ram'):
+                selections[part] = dict(sel)
+        remember()
+
+        def done(result):
+            if 'strip' in parts:
+                power.set('Fita: ligada')
+            report(result)
+        submit(make_job(parts, lambda part: sel), done)
 
     def pick():
-        selected = colorchooser.askcolor(state['colour'], parent=root)[1]
+        selected = colorchooser.askcolor(v.colour.get(), parent=root)[1]
         if selected:
-            state['colour'] = selected
-            update_preview()
-            mode.set('colour')
+            v.colour.set(selected)
+            if v.mode.get() == 'white':
+                v.mode.set('colour')
 
     def loaded(items):
         values = {item['code']: item['value'] for item in items}
         if 'switch_led' in values:
-            power.set('Ligada' if values['switch_led'] else 'Desligada')
+            power.set('Fita: ligada' if values['switch_led'] else 'Fita: desligada')
+        sel = selections['strip']
         current = values.get('work_mode')
         if current in ('white', 'colour'):
-            mode.set(current)
+            sel['mode'] = current
         if current == 'colour':
             c = values.get('colour_data_v2', {})
             if isinstance(c, str):
-                c = json.loads(c)
+                c = json.loads(c) if c else {}
             if c:
-                brightness.set(max(1, round(c['v']/10)))
+                sel['brightness'] = max(1, round(c['v']/10))
                 rgb = colorsys.hsv_to_rgb(c['h']/360, c['s']/1000, 1)
-                state['colour'] = '#' + ''.join(f'{round(x*255):02x}' for x in rgb)
-                update_preview()
+                sel['colour'] = '#' + ''.join(f'{round(x*255):02x}' for x in rgb)
         elif current == 'white':
-            brightness.set(max(1, round(values.get('bright_value_v2', 500)/10)))
-        temperature.set(values.get('temp_value_v2', 500))
+            sel['brightness'] = max(1, round(values.get('bright_value_v2', 500)/10))
+        sel['temperature'] = values.get('temp_value_v2', sel['temperature'])
+        if v.target.get() == 'strip':
+            load_selection()
 
     def refresh():
         api = state['api']
-        submit(lambda: api.request('GET', 'status'), loaded)
+        submit(lambda: api.request('GET', 'status'), loaded, needs_tuya=True)
 
     def settings():
         win = tk.Toplevel(root)
@@ -271,6 +415,21 @@ def main():
         ttk.Checkbutton(box, text='Iniciar aplicativo com o Windows', variable=auto).pack(anchor='w')
         ttk.Checkbutton(box, text='Ligar LEDs ao iniciar com o Windows', variable=led_start).pack(anchor='w')
         ttk.Checkbutton(box, text='Desligar LEDs ao desligar/reiniciar o PC', variable=led_stop).pack(anchor='w')
+        ttk.Separator(box).pack(fill='x', pady=10)
+        pc_sync = tk.BooleanVar(value=v.pc_sync.get())
+        ttk.Checkbutton(box, text='Sincronizar placa-mãe e memórias (OpenRGB)', variable=pc_sync).pack(anchor='w')
+        pc_info = tk.StringVar(value='Requer o OpenRGB aberto com o servidor SDK ativo.')
+        def test_pc():
+            pc_info.set('Procurando dispositivos…')
+            win.update_idletasks()
+            try:
+                names = state['pc'].devices((0, 1))
+                pc_info.set('Encontrados: ' + ', '.join(names) if names else
+                            'Nenhuma placa-mãe ou memória RGB. Abra o OpenRGB como administrador.')
+            except RuntimeError as exc:
+                pc_info.set(str(exc))
+        ttk.Button(box, text='Testar OpenRGB', command=test_pc).pack(fill='x', pady=(6, 0))
+        ttk.Label(box, textvariable=pc_info, wraplength=320, justify='left').pack(anchor='w', pady=(4, 0))
         ttk.Label(box, text='Inicia após entrar na sua conta, na bandeja.\nDesligamento requer app aberto e internet.\nFechar a janela mantém o app ativo; Sair encerra.',
                   wraplength=320).pack(anchor='w', pady=8)
         def save():
@@ -278,16 +437,16 @@ def main():
                 messagebox.showinfo('Aguarde', 'Espere o comando atual terminar.', parent=win)
                 return
             new = {k: v.get().strip() for k, v in entries.items()}
-            if not all(new.values()):
-                messagebox.showerror('Configuração', 'Preencha os três campos.', parent=win)
+            filled = [bool(v) for v in new.values()]
+            if not all(filled) and (any(filled) or not pc_sync.get()):
+                messagebox.showerror('Configuração', 'Preencha os três campos da Tuya.', parent=win)
                 return
-            new.update(led_on_start=led_start.get(), led_off_shutdown=led_stop.get())
+            new.update(led_on_start=led_start.get(), led_off_shutdown=led_stop.get(),
+                       pc_sync=pc_sync.get())
             previous_startup = startup_enabled()
             try:
                 set_startup(auto.get())
-                temp = config_path.with_suffix('.tmp')
-                temp.write_text(json.dumps(new, indent=2), encoding='utf-8')
-                temp.replace(config_path)
+                save_config({**config, **new})
             except OSError:
                 try:
                     set_startup(previous_startup)
@@ -298,11 +457,28 @@ def main():
             config.update(new)
             state['api'] = Tuya(config)
             win.destroy()
-            refresh()
+            if v.pc_sync.get() != new['pc_sync']:
+                v.pc_sync.set(new['pc_sync'])
+            if tuya_ready():
+                refresh()
+            else:
+                status.set('Configuração salva. Escolha a cor e clique em Aplicar.')
         ttk.Button(box, text='Salvar e testar conexão', command=save).pack(fill='x')
         ttk.Label(box, text='As chaves ficam em um arquivo local no seu perfil.').pack(pady=(10, 0))
 
-    update_preview = build_panel(frame, state, brightness, temperature, mode, power, status, pick, apply, set_power)
+    def pc_sync_changed(*_):
+        config['pc_sync'] = v.pc_sync.get()
+        try:
+            save_config(config)
+        except OSError:
+            pass
+        if config['pc_sync']:
+            status.set('Placa-mãe e memórias ativadas. Use as abas para escolher cada uma.')
+        elif not tuya_ready():
+            settings()
+    v.pc_sync.trace_add('write', pc_sync_changed)
+
+    build_panel(frame, v, pick, apply, set_power, EFFECTS, SPEEDS)
 
     def show():
         root.deiconify()
@@ -311,6 +487,7 @@ def main():
 
     def quit_app():
         listener.stop()
+        state['pc'].close()
         icon.stop()
         tasks.put(None)
         root.destroy()
@@ -334,17 +511,19 @@ def main():
         status.set(str(exc))
         messagebox.showwarning('Integração Windows', str(exc), parent=root)
     root.after(100, poll)
-    if not config['client_id']:
+    if not ready:
         root.after(200, settings)
-    if startup_launch and config['client_id'] and config['secret']:
+    if startup_launch and ready:
         root.withdraw()
         if config.get('led_on_start', False):
-            def startup_on():
+            def startup_on(job):
                 last_error = None
                 for attempt in range(6):
                     try:
-                        state['api'].send([command('switch_led', True)])
-                        return True
+                        done, errors = job()
+                        if errors and attempt < 5:
+                            raise RuntimeError(' '.join(errors))
+                        return done, errors
                     except Exception as exc:
                         last_error = exc
                         if attempt < 5:
@@ -355,7 +534,10 @@ def main():
                     root.after(500, begin_startup)
                     return
                 state['busy'] = True
-                tasks.put((startup_on, 'startup_done'))
+                # Fita: só liga (mantém a cor dela). PC: restaura a seleção salva
+                # de cada parte, pois a placa volta ao padrão após reiniciar.
+                job = make_job(active_parts('all'), lambda part: selections[part], True)
+                tasks.put((lambda: startup_on(job), 'startup_done'))
             root.after(3000, begin_startup)
     root.mainloop()
 

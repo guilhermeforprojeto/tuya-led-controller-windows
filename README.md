@@ -11,7 +11,7 @@ Controle fitas LED Wi-Fi Tuya e Smart Life pelo computador Windows: ligar/deslig
 3. [Configure a fita no aplicativo](#primeira-abertura).
 4. [Escolha como acompanhar a inicialização e o desligamento do PC](#iniciar-com-o-windows-e-desligar-os-leds-com-o-pc).
 
-Projeto independente, sem vínculo oficial com Tuya, ASUS ou Google. A integração com Armoury Crate / Aura Sync **não está implementada**.
+Projeto independente, sem vínculo oficial com Tuya, ASUS, OpenRGB ou Google. Os LEDs da placa-mãe e das memórias podem ser sincronizados com a fita [via OpenRGB](#leds-da-placa-mãe-e-das-memórias-openrgb).
 
 ## Interface
 
@@ -79,6 +79,25 @@ Clique em **Salvar e testar conexão**. Depois:
 4. Clique no botão destacado **Aplicar cor e brilho** (ou **Aplicar branco e brilho**).
 
 **Aplicar** também liga a fita. O menu **Opções → Atualizar estado da fita** somente consulta; **Ligar/Desligar** preserva o modo e a cor. O ajuste de temperatura precisa dos canais de branco da fita, não apenas de um controlador anunciado como RGBCCT.
+
+## Abas e efeitos
+
+- **Abas de dispositivo:** Geral, Fita, Placa-mãe e Memórias. Cada aba guarda a própria cor, o brilho e o efeito. **Aplicar em Geral** envia a mesma seleção para todos e a copia para as outras abas. Ligar/Desligar valem para a aba aberta, e o menu da bandeja liga/desliga tudo.
+- **Modos:** Cor, Branco e Efeitos.
+- **Efeitos predefinidos:** Estático, Respirar, Piscar, Arco-íris, Ciclo de cores, Perseguição e Cintilar, com velocidade Lenta, Média ou Rápida. Na fita viram cenas Tuya (`scene_data_v2`); na placa e nas memórias usam os efeitos de hardware do OpenRGB. Respirar, Piscar e Perseguição usam a cor escolhida. Na placa e nas memórias, Arco-íris, Ciclo e Cintilar seguem o brilho do próprio hardware.
+
+## LEDs da placa-mãe e das memórias (OpenRGB)
+
+Com a opção **Sincronizar placa-mãe e memórias (OpenRGB)**, cada **Aplicar**, **Ligar** e **Desligar** também vale para a placa-mãe (inclusive headers ARGB) e para as memórias RGB. Pensado para a ASUS TUF GAMING B550M-PLUS com memórias ADATA/XPG DDR4; a comunicação real com o hardware ainda precisa ser validada.
+
+O SDK Aura do Armoury Crate não lista dispositivos nas versões atuais, por isso a integração usa o [OpenRGB](https://openrgb.org/):
+
+1. No Armoury Crate, desative o controle de iluminação (ou pare o serviço **LightingService**). Os dois programas disputam o mesmo hardware.
+2. Instale o OpenRGB 1.0 ou superior e abra-o **como administrador** na primeira vez (as memórias usam o barramento SMBus e exigem o driver PawnIO que o instalador oferece).
+3. Confira se a placa e as memórias aparecem. Na aba **SDK Server**, clique em **Start Server** (porta 6742). Em **Settings**, ative iniciar com o Windows, minimizado, com o servidor ligado.
+4. No Controle LED, abra **Opções → Configurações**, marque a sincronização e clique em **Testar OpenRGB**.
+
+O brilho é aplicado escurecendo a cor, e o modo Branco vira um tom quente/frio aproximado. Sem credenciais Tuya, o app funciona só com os LEDs do PC. Se a fita ou o OpenRGB falhar, o outro ainda recebe o comando e o rodapé mostra o aviso. A última seleção é lembrada e restaurada no PC ao iniciar com o Windows.
 
 ## Iniciar com o Windows e desligar os LEDs com o PC
 

@@ -56,8 +56,8 @@ class BrightnessSlider(tk.Canvas):
 
 def setup_theme(root):
     root.configure(bg=BG)
-    root.geometry('460x700')
-    root.minsize(460, 700)
+    root.geometry('480x760')
+    root.minsize(480, 740)
     root.resizable(True, True)
     root.option_add('*Font', ('Segoe UI', 10))
     style = ttk.Style(root)
@@ -73,111 +73,184 @@ def setup_theme(root):
     style.configure('TSeparator', background='#303b50')
 
 
-def build_panel(frame, state, brightness, temperature, mode, power, status,
-                pick, apply_colour, set_power):
+TARGETS = [('all', 'Geral'), ('strip', 'Fita'), ('board', 'Placa-mãe'), ('ram', 'Memórias')]
+PC_TARGETS = ('board', 'ram')
+PALETTE = ['#a020f0', '#ff4569', '#ff943b', '#ffdc60', '#40d9a0', '#3d9dff', '#ffffff']
+
+
+def white_preview(temperature):
+    t = temperature / 1000
+    return '#%02x%02x%02x' % tuple(round(a+(b-a)*t) for a, b in zip((255, 186, 107), (205, 228, 255)))
+
+
+def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds):
+    """v: namespace com as variáveis Tk (target, mode, colour, brightness,
+    temperature, effect, speed, pc_sync, power, status)."""
+    labels = dict(TARGETS)
+    effect_info = {key: (name, colour) for key, name, colour, _ in effects}
+
     def label(parent, text=None, **kwargs):
-        return tk.Label(parent, text=text, bg=parent.cget('bg'), fg=TEXT, **kwargs)
+        kwargs.setdefault('fg', TEXT)
+        return tk.Label(parent, text=text, bg=parent.cget('bg'), **kwargs)
 
     def button(parent, text, callback, bg=CARD, fg=TEXT, **kwargs):
         return tk.Button(parent, text=text, command=callback, bg=bg, fg=fg,
                          activebackground='#3a4660', activeforeground=TEXT,
-                         relief='flat', bd=0, cursor='hand2', padx=14, pady=9,
+                         relief='flat', bd=0, cursor='hand2', padx=14, pady=8,
                          highlightthickness=0, **kwargs)
+
+    def segmented(parent, variable, options, pady=8, font=None):
+        bar = tk.Frame(parent, bg=CARD, padx=4, pady=4)
+        items = {}
+        for value, text in options:
+            items[value] = tk.Radiobutton(bar, text=text, variable=variable, value=value,
+                indicatoron=False, bg=CARD, fg=MUTED, selectcolor='#414269',
+                activebackground='#303b50', activeforeground=TEXT, relief='flat',
+                bd=0, pady=pady, cursor='hand2', font=font)
+            items[value].pack(side='left', expand=True, fill='x')
+        return bar, items
 
     shell = tk.Frame(frame, bg=BG)
     shell.pack(fill='both', expand=True)
     top = tk.Frame(shell, bg=BG)
     top.pack(fill='x')
-    label(top, 'Controle LED', font=('Segoe UI', 22, 'bold')).pack(side='left')
-    label(shell, textvariable=power).pack(anchor='w', pady=(2, 12))
+    label(top, 'Controle LED', font=('Segoe UI', 20, 'bold')).pack(side='left')
+    label(top, textvariable=v.power, fg=MUTED, font=('Segoe UI', 9)).pack(side='right', pady=(10, 0))
+
+    target_bar, target_items = segmented(shell, v.target, TARGETS, font=('Segoe UI', 10, 'bold'))
+    target_bar.pack(fill='x', pady=(10, 8))
     power_row = tk.Frame(shell, bg=BG)
-    power_row.pack(fill='x', pady=(0, 16))
-    button(power_row, 'Ligar', lambda: set_power(True)).pack(side='left', expand=True, fill='x', padx=(0, 5))
-    button(power_row, 'Desligar', lambda: set_power(False)).pack(side='left', expand=True, fill='x', padx=(5, 0))
+    power_row.pack(fill='x', pady=(0, 6))
+    on_button = button(power_row, 'Ligar', lambda: set_power(True))
+    on_button.pack(side='left', expand=True, fill='x', padx=(0, 5))
+    off_button = button(power_row, 'Desligar', lambda: set_power(False))
+    off_button.pack(side='left', expand=True, fill='x', padx=(5, 0))
+    tk.Checkbutton(shell, text='  Usar placa-mãe e memórias (OpenRGB)', variable=v.pc_sync,
+                   bg=BG, fg=MUTED, selectcolor=CARD, activebackground=BG,
+                   activeforeground=TEXT, highlightthickness=0, bd=0,
+                   cursor='hand2', anchor='w', font=('Segoe UI', 9)).pack(fill='x', pady=(0, 8))
 
-    tabs = tk.Frame(shell, bg=CARD, padx=4, pady=4)
-    tabs.pack(fill='x', pady=(0, 14))
-    for text, value in [('Cor RGB', 'colour'), ('Branco', 'white')]:
-        tk.Radiobutton(tabs, text=text, variable=mode, value=value,
-            indicatoron=False, bg=CARD, fg=MUTED, selectcolor='#414269',
-            activebackground='#303b50', activeforeground=TEXT, relief='flat',
-            bd=0, pady=9, cursor='hand2').pack(side='left', expand=True, fill='x')
+    mode_bar, _ = segmented(shell, v.mode, [('colour', 'Cor'), ('white', 'Branco'), ('effect', 'Efeitos')])
+    mode_bar.pack(fill='x', pady=(0, 10))
 
-    preview = tk.Canvas(shell, height=112, bg=CARD, highlightthickness=0, cursor='hand2')
+    preview = tk.Canvas(shell, height=84, bg=CARD, highlightthickness=0, cursor='hand2')
     preview.pack(fill='x')
     preview.bind('<Button-1>', lambda _: pick())
-    colour_tools = tk.Frame(shell, bg=BG)
+
+    body = tk.Frame(shell, bg=BG)
+    body.pack(fill='x')
+    effect_tools = tk.Frame(body, bg=BG)
+    grid = tk.Frame(effect_tools, bg=BG)
+    grid.pack(fill='x', pady=(10, 0))
+    for index, (key, name, _, _) in enumerate(effects):
+        tk.Radiobutton(grid, text=name, variable=v.effect, value=key, indicatoron=False,
+                       bg=CARD, fg=MUTED, selectcolor='#414269', activebackground='#303b50',
+                       activeforeground=TEXT, relief='flat', bd=0, pady=7, cursor='hand2',
+                       font=('Segoe UI', 9)).grid(row=index // 4, column=index % 4,
+                                                  sticky='ew', padx=2, pady=2)
+    for column in range(4):
+        grid.columnconfigure(column, weight=1, uniform='fx')
+    speed_row = tk.Frame(effect_tools, bg=BG)
+    speed_row.pack(fill='x', pady=(6, 0))
+    label(speed_row, 'Velocidade', font=('Segoe UI', 9)).pack(side='left', padx=(0, 10))
+    speed_bar, _ = segmented(speed_row, v.speed, speeds, pady=4, font=('Segoe UI', 9))
+    speed_bar.pack(side='left', expand=True, fill='x')
+
+    colour_tools = tk.Frame(body, bg=BG)
     palette = tk.Frame(colour_tools, bg=BG)
-    palette.pack(side='left', pady=12)
-    for colour in ['#a020f0', '#ff4569', '#ff943b', '#ffdc60', '#40d9a0', '#3d9dff']:
-        def choose(c=colour):
-            state['colour'] = c
-            mode.set('colour')
-            update()
+    palette.pack(side='left', pady=10)
+    for colour in PALETTE:
         tk.Button(palette, bg=colour, activebackground=colour, relief='flat', bd=0,
-                  width=3, height=1, cursor='hand2', command=choose).pack(side='left', padx=(0, 5))
+                  width=3, height=1, cursor='hand2',
+                  command=lambda c=colour: v.colour.set(c)).pack(side='left', padx=(0, 5))
     button(colour_tools, 'Outra cor…', pick).pack(side='right', pady=8)
-    white_tools = tk.Frame(shell, bg=BG)
+
+    white_tools = tk.Frame(body, bg=BG)
     white_title = tk.Frame(white_tools, bg=BG)
-    white_title.pack(fill='x', pady=(12, 0))
+    white_title.pack(fill='x', pady=(10, 0))
     label(white_title, 'Temperatura do branco').pack(side='left')
     temperature_label = label(white_title, '')
     temperature_label.pack(side='right')
-    tk.Scale(white_tools, from_=0, to=1000, variable=temperature, orient='horizontal',
+    tk.Scale(white_tools, from_=0, to=1000, variable=v.temperature, orient='horizontal',
              showvalue=False, bg=BG, fg=TEXT, troughcolor=CARD, activebackground=ACCENT,
              highlightthickness=0, bd=0, sliderrelief='flat', length=360).pack(fill='x')
-    label(white_tools, 'Quente                                               Frio', font=('Segoe UI', 9)).pack(fill='x')
+    ends_white = tk.Frame(white_tools, bg=BG)
+    ends_white.pack(fill='x')
+    tk.Label(ends_white, text='Quente', bg=BG, fg=MUTED, font=('Segoe UI', 8)).pack(side='left')
+    tk.Label(ends_white, text='Frio', bg=BG, fg=MUTED, font=('Segoe UI', 8)).pack(side='right')
 
     brightness_box = tk.Frame(shell, bg=BG)
-    brightness_box.pack(fill='x', pady=(4, 0))
+    brightness_box.pack(fill='x', pady=(6, 0))
     line = tk.Frame(brightness_box, bg=BG)
     line.pack(fill='x')
     label(line, 'Brilho', font=('Segoe UI', 11, 'bold')).pack(side='left')
     percent = label(line, '', font=('Segoe UI', 11, 'bold'))
     percent.pack(side='right')
-    BrightnessSlider(brightness_box, brightness).pack(fill='x', pady=(4, 0))
-    ends = tk.Frame(brightness_box, bg=BG)
-    ends.pack(fill='x')
-    tk.Label(ends, text='1%', bg=BG, fg=MUTED, font=('Segoe UI', 8)).pack(side='left')
-    tk.Label(ends, text='100%', bg=BG, fg=MUTED, font=('Segoe UI', 8)).pack(side='right')
-    action = tk.Button(shell, text='Aplicar cor', command=apply_colour,
+    BrightnessSlider(brightness_box, v.brightness).pack(fill='x', pady=(2, 0))
+    action = tk.Button(shell, text='', command=apply_selection,
                        bg=ACCENT, fg='#171124', activebackground='#d9bfff',
                        activeforeground='#171124', relief='flat', bd=0,
-                       cursor='hand2', pady=14, font=('Segoe UI', 13, 'bold'))
-    action.pack(fill='x', pady=(12, 6))
-    label(shell, 'Escolha os ajustes e clique em Aplicar.', font=('Segoe UI', 9)).pack(anchor='w')
+                       cursor='hand2', pady=12, font=('Segoe UI', 12, 'bold'))
+    action.pack(fill='x', pady=(10, 4))
     footer = tk.Frame(shell, bg=BG)
-    footer.pack(side='bottom', fill='x', pady=(12, 0))
-    tk.Label(footer, textvariable=status, bg=BG, fg=MUTED, wraplength=400,
+    footer.pack(side='bottom', fill='x', pady=(8, 0))
+    tk.Label(footer, textvariable=v.status, bg=BG, fg=MUTED, wraplength=400,
              justify='left', anchor='w', font=('Segoe UI', 9)).pack(fill='x')
     brand = tk.Label(footer, text='Feito por System Bee Solutions ↗', bg=BG,
                      fg=ACCENT, cursor='hand2', takefocus=True,
-                     font=('Segoe UI', 9, 'underline'), pady=8)
-    brand.pack(anchor='w', pady=(4, 0))
-    brand.bind('<Button-1>', lambda _: webbrowser.open('https://systembee.com.br/'))
-    brand.bind('<Return>', lambda _: webbrowser.open('https://systembee.com.br/'))
-    brand.bind('<space>', lambda _: webbrowser.open('https://systembee.com.br/'))
+                     font=('Segoe UI', 9, 'underline'), pady=6)
+    brand.pack(anchor='w', pady=(2, 0))
+    for sequence in ('<Button-1>', '<Return>', '<space>'):
+        brand.bind(sequence, lambda _: webbrowser.open('https://systembee.com.br/'))
 
     def update(*_):
-        percent.configure(text=f'{brightness.get()}%')
-        temperature_label.configure(text=f'{round(temperature.get()/10)}% frio')
-        white = mode.get() == 'white'
-        action.configure(text='Aplicar branco e brilho' if white else 'Aplicar cor e brilho')
-        colour_tools.pack_forget()
-        white_tools.pack_forget()
-        (white_tools if white else colour_tools).pack(fill='x', before=brightness_box)
-        colour = state['colour']
-        if white:
-            t = temperature.get()/1000
-            colour = '#%02x%02x%02x' % tuple(round(a+(b-a)*t) for a,b in zip((255,186,107),(205,228,255)))
+        if not v.pc_sync.get() and v.target.get() in PC_TARGETS:
+            v.target.set('all')
+            return
+        for key in PC_TARGETS:
+            target_items[key].pack_forget()
+            if v.pc_sync.get():
+                target_items[key].pack(side='left', expand=True, fill='x')
+        mode = v.mode.get()
+        where = labels.get(v.target.get(), 'Geral')
+        percent.configure(text=f'{v.brightness.get()}%')
+        temperature_label.configure(text=f'{round(v.temperature.get()/10)}% frio')
+        effect_name, effect_colour = effect_info.get(v.effect.get(), ('Estático', True))
+        for tools in (effect_tools, colour_tools, white_tools):
+            tools.pack_forget()
+        if mode == 'effect':
+            effect_tools.pack(fill='x')
+        if mode == 'white':
+            white_tools.pack(fill='x')
+        elif mode == 'colour' or effect_colour:
+            colour_tools.pack(fill='x')
+        on_button.configure(text=f'Ligar · {where}')
+        off_button.configure(text=f'Desligar · {where}')
+        action.configure(text=f'Aplicar em {where}')
+
         preview.delete('all')
-        preview.create_oval(20, 20, 88, 88, fill=colour, outline='')
-        preview.create_text(108, 36, anchor='w', text='PRÉVIA DA SELEÇÃO', fill=MUTED, font=('Segoe UI', 9))
-        preview.create_text(108, 62, anchor='w', text='Branco' if white else state['colour'].upper(),
-                            fill=TEXT, font=('Segoe UI', 18, 'bold'))
-        preview.create_text(108, 88, anchor='w', text='Clique para escolher outra cor' if not white else 'Ajuste a temperatura abaixo',
-                            fill=MUTED, font=('Segoe UI', 9))
-    for variable in (brightness, temperature, mode):
+        colour = white_preview(v.temperature.get()) if mode == 'white' else v.colour.get()
+        if mode == 'effect' and not effect_colour:
+            width = 68 / 6
+            for i, c in enumerate(['#ff4040', '#ffb040', '#f0f040', '#40e080', '#40a0ff', '#b060ff']):
+                preview.create_rectangle(16 + i*width, 8, 16 + (i+1)*width, 76, fill=c, outline='')
+        else:
+            preview.create_oval(16, 8, 84, 76, fill=colour, outline='')
+        if mode == 'white':
+            title = 'Branco'
+        elif mode == 'effect':
+            title = effect_name
+        else:
+            title = colour.upper()
+        detail = (f'{colour.upper()} · ' if mode == 'effect' and effect_colour else '')
+        preview.create_text(100, 24, anchor='w', text=f'PRÉVIA · {where.upper()}', fill=MUTED, font=('Segoe UI', 9))
+        preview.create_text(100, 48, anchor='w', text=title, fill=TEXT, font=('Segoe UI', 17, 'bold'))
+        preview.create_text(100, 70, anchor='w', fill=MUTED, font=('Segoe UI', 9),
+                            text=detail + ('Ajuste a temperatura abaixo' if mode == 'white' else
+                                         'Efeito com cores próprias' if mode == 'effect' and not effect_colour
+                                         else 'Clique para escolher outra cor'))
+
+    for variable in (v.target, v.mode, v.colour, v.brightness, v.temperature, v.effect, v.pc_sync):
         variable.trace_add('write', update)
     update()
     return update
