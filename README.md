@@ -183,8 +183,8 @@ estão. Embaixo de cada pente há **Desligar/Ligar**, e **Apagar outros** apaga 
   setas e salvar. Também dá para fazer à mão: o botão **Piscar** acende um pente de branco para você ver
   qual é qual, e as setas trocam a posição. Os efeitos andam do pente 1 para o último.
 - Os efeitos das memórias são calculados pelo próprio app (cerca de 30 quadros por
-  segundo), por isso ficam em ordem e sincronizados. A prévia da janela, o ícone da
-  barra de tarefas e o painel da bandeja mostram o mesmo efeito, no mesmo ritmo.
+  segundo), por isso ficam em ordem e sincronizados. A prévia da janela mostra o
+  mesmo efeito, no mesmo ritmo; o ícone da barra fica fixo, na cor escolhida.
 - O app precisa ficar aberto (pode ser só na bandeja) para os efeitos animados das
   memórias continuarem. O estado de cada pente é salvo e volta ao abrir o app.
 

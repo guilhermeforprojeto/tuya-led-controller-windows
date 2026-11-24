@@ -899,9 +899,8 @@ def main():
                 ('Programas que interferem nos LEDs…', open_conflicts)])
 
     def live_art(sel, t=None):
-        """Desenho do ícone no instante t: mesma cor que o efeito mostra agora."""
-        if is_animated(sel):
-            return dict(colour=rgb_to_hex(fx_single(sel, time.time() if t is None else t)))
+        """Desenho do ícone: fixo, na cor escolhida (não acompanha o efeito,
+        para não ficar piscando na barra de tarefas)."""
         return icon_for(sel)
 
     def paint_window_icon(sel, t=None):
@@ -921,21 +920,12 @@ def main():
             pass
 
     def animation_tick():
-        """Relógio único: prévia (30 fps) e ícones (8 fps) seguem o mesmo efeito
-        e o mesmo instante que as memórias."""
+        """Relógio da prévia (30 fps), no mesmo instante que as memórias.
+        Os ícones ficam fixos."""
         t = time.time()
         try:
             if root.state() == 'normal':
                 panel.tick(t)
-            state['icon_frame'] = state.get('icon_frame', 0) + 1
-            sel = selections['all']
-            if is_animated(sel) and state['icon_frame'] % 4 == 0:
-                paint_icon(sel, t, menu=False)
-                if state['flyout'].visible:
-                    state['flyout'].refresh_icon()
-            elif not is_animated(sel) and state.get('icon_was_animated'):
-                paint_icon(sel)  # efeito parou: volta ao desenho fixo
-            state['icon_was_animated'] = is_animated(sel)
         except Exception as exc:
             log('Animação: ' + str(exc))
         root.after(33, animation_tick)
