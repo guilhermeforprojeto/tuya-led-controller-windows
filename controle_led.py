@@ -101,7 +101,9 @@ def main():
         if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
             messagebox.showinfo('Controle LED', 'O aplicativo já está aberto. Procure o ícone perto do relógio.')
             return
-    from PIL import Image, ImageDraw
+    from PIL import ImageTk
+    from icon_art import draw_icon, icon_for
+    from conflicts import find_conflicts, run_fix
 
     folder = Path(os.environ.get('APPDATA', str(Path.home()))) / 'ControleLED'
     folder.mkdir(parents=True, exist_ok=True)
@@ -182,6 +184,7 @@ def main():
         temperature=tk.IntVar(), effect=tk.StringVar(), speed=tk.StringVar(),
         pc_sync=tk.BooleanVar(value=config.get('pc_sync', False)),
         power=tk.StringVar(value='Fita: estado não consultado'),
+        warning=tk.StringVar(value=''),
         status=tk.StringVar(value='Escolha a aba, a cor ou o efeito e clique em Aplicar.' if ready
                             else 'Configure as credenciais para começar.'))
     status, power = v.status, v.power
@@ -285,6 +288,8 @@ def main():
             text += ' Aviso: ' + ' '.join(errors)
             log(text)
         status.set(text)
+        if any(name != 'fita' for name in done):
+            check_conflicts()
 
     def poll():
         try:
@@ -306,6 +311,28 @@ def main():
                     return
                 if cb == 'power':
                     set_power(value, 'all')
+                    continue
+                if cb == 'quick':
+                    quick_apply(value)
+                    continue
+                if cb == 'conflicts':
+                    show_conflicts(value)
+                    continue
+                if cb == 'fix':
+                    fix_conflicts()
+                    continue
+                if cb == 'fixed':
+                    state['fixing'] = False
+                    if error:
+                        status.set(error)
+                        log('Correção de conflitos: ' + error)
+                    elif value:
+                        log('Conflitos corrigidos; reaplicando as cores do PC.')
+                        status.set('Conflitos corrigidos. Reaplicando as cores…')
+                        reapply_pc()
+                    else:
+                        status.set('Correção cancelada.')
+                    check_conflicts()
                     continue
                 state['busy'] = False
                 if error:
@@ -352,6 +379,7 @@ def main():
             # O Geral vira a seleção de todas as abas.
             for part in ('strip', 'board', 'ram'):
                 selections[part] = dict(sel)
+            paint_icon(sel)
         remember()
 
         def done(result):
@@ -359,6 +387,77 @@ def main():
                 power.set('Fita: ligada')
             report(result)
         submit(make_job(parts, lambda part: sel), done)
+
+    def quick_apply(changes):
+        """Atalho da bandeja: aplica a mudança em tudo (aba Geral)."""
+        if state['busy']:
+            return
+        parts = active_parts('all')
+        if not parts:
+            return nothing_to_control()
+        sel = dict(selections['all'], **changes)
+        for key in ('all', 'strip', 'board', 'ram'):
+            selections[key] = dict(sel)
+        load_selection()
+        remember()
+        paint_icon(sel)
+
+        def done(result):
+            if 'strip' in parts:
+                power.set('Fita: ligada')
+            report(result)
+        submit(make_job(parts, lambda part: sel), done)
+
+    # Conflitos: outros programas que trocam as cores da placa e das memórias.
+    state['conflicts'] = []
+    state['fixing'] = False
+
+    def check_conflicts():
+        if not config.get('pc_sync') or os.name != 'nt':
+            show_conflicts([])
+            return
+
+        def run():
+            try:
+                found = find_conflicts()
+            except Exception as exc:
+                log('Verificação de conflitos falhou: ' + str(exc))
+                found = []
+            results.put(('conflicts', found, None))
+        threading.Thread(target=run, daemon=True).start()
+
+    def show_conflicts(found):
+        keys = [key for key, _ in found]
+        if keys and keys != [k for k, _ in state['conflicts']]:
+            log('Conflitos encontrados: ' + ', '.join(keys))
+        state['conflicts'] = found
+        v.warning.set(' '.join(text for _, text in found))
+        try:
+            icon.update_menu()
+        except Exception:
+            pass
+
+    def fix_conflicts():
+        if state['fixing'] or not state['conflicts']:
+            return
+        state['fixing'] = True
+        status.set('Corrigindo conflitos… confirme o pedido de permissão do Windows.')
+
+        def run():
+            try:
+                results.put(('fixed', run_fix(folder), None))
+            except Exception as exc:
+                results.put(('fixed', None, str(exc)))
+        threading.Thread(target=run, daemon=True).start()
+
+    def reapply_pc():
+        parts = [p for p in active_parts('all') if p != 'strip']
+        if parts:
+            submit(make_job(parts, lambda part: selections[part]), report)
+
+    def periodic_check():
+        check_conflicts()
+        root.after(5 * 60 * 1000, periodic_check)
 
     def pick():
         selected = colorchooser.askcolor(v.colour.get(), parent=root)[1]
@@ -472,13 +571,15 @@ def main():
             save_config(config)
         except OSError:
             pass
+        check_conflicts()
         if config['pc_sync']:
             status.set('Placa-mãe e memórias ativadas. Use as abas para escolher cada uma.')
         elif not tuya_ready():
             settings()
     v.pc_sync.trace_add('write', pc_sync_changed)
 
-    build_panel(frame, v, pick, apply, set_power, EFFECTS, SPEEDS)
+    set_header_icon = build_panel(frame, v, pick, apply, set_power, EFFECTS, SPEEDS,
+                                  lambda: results.put(('fix', None, None)))
 
     def show():
         root.deiconify()
@@ -494,14 +595,65 @@ def main():
 
     build_menu(root, settings, refresh, root.withdraw, quit_app)
 
-    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse((8, 4, 56, 52), fill='#a020f0')
-    draw.rounded_rectangle((23, 45, 41, 61), radius=4, fill='#667085')
-    icon = pystray.Icon('ControleLED', img, 'Controle LED · PC', menu=pystray.Menu(
+    def paint_window_icon(sel):
+        art = icon_for(sel)
+        window_icon = ImageTk.PhotoImage(draw_icon(size=64, **art))
+        root.iconphoto(True, window_icon)
+        set_header_icon(ImageTk.PhotoImage(draw_icon(size=44, **art)))
+        state['window_icon'] = window_icon
+
+    def paint_icon(sel):
+        paint_window_icon(sel)
+        try:
+            icon.icon = draw_icon(size=64, **icon_for(sel))
+            icon.update_menu()  # no Windows o menu não se refaz sozinho
+        except Exception:
+            pass
+
+    from effects import QUICK_COLOURS, QUICK_BRIGHTNESS
+
+    def quick(changes):
+        return lambda *_: results.put(('quick', changes, None))
+
+    def is_current(test):
+        return lambda _item: test(selections['all'])
+
+    colour_items = [pystray.MenuItem(
+        name, quick({'mode': 'colour', 'colour': hex_}),
+        checked=is_current(lambda s, h=hex_: s['mode'] == 'colour' and s['colour'].lower() == h),
+        radio=True) for name, hex_ in QUICK_COLOURS]
+    white_items = [pystray.MenuItem(
+        name, quick({'mode': 'white', 'temperature': temp}),
+        checked=is_current(lambda s, t=temp: s['mode'] == 'white' and s['temperature'] == t),
+        radio=True) for name, temp in (('Branco quente', 0), ('Branco neutro', 500), ('Branco frio', 1000))]
+    effect_items = [pystray.MenuItem(
+        label, quick({'mode': 'effect', 'effect': key}),
+        checked=is_current(lambda s, k=key: s['mode'] == 'effect' and s['effect'] == k),
+        radio=True) for key, label, *_ in EFFECTS if key != 'static']
+    speed_items = [pystray.MenuItem(
+        label, quick({'speed': key}),
+        checked=is_current(lambda s, k=key: s['speed'] == k),
+        radio=True) for key, label in SPEEDS]
+    bright_items = [pystray.MenuItem(
+        f'{value}%', quick({'brightness': value}),
+        checked=is_current(lambda s, b=value: s['brightness'] == b),
+        radio=True) for value in QUICK_BRIGHTNESS]
+
+    paint_window_icon(selections['all'])
+    icon = pystray.Icon('ControleLED', draw_icon(size=64, **icon_for(selections['all'])),
+                        'Controle LED · PC', menu=pystray.Menu(
         pystray.MenuItem('Abrir controles', lambda *_: results.put(('show', None, None)), default=True),
+        pystray.MenuItem('⚠ Corrigir conflitos de cores', lambda *_: results.put(('fix', None, None)),
+                         visible=lambda _item: bool(state['conflicts'])),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem('Cores', pystray.Menu(*colour_items, pystray.Menu.SEPARATOR, *white_items)),
+        pystray.MenuItem('Efeitos', pystray.Menu(*effect_items, pystray.Menu.SEPARATOR,
+                                                 pystray.MenuItem('Velocidade', pystray.Menu(*speed_items)))),
+        pystray.MenuItem('Brilho', pystray.Menu(*bright_items)),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem('Ligar', lambda *_: results.put(('power', True, None))),
         pystray.MenuItem('Desligar', lambda *_: results.put(('power', False, None))),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem('Sair', lambda *_: results.put(('quit', None, None)))))
     threading.Thread(target=icon.run, daemon=True).start()
     root.protocol('WM_DELETE_WINDOW', root.withdraw)
@@ -511,6 +663,7 @@ def main():
         status.set(str(exc))
         messagebox.showwarning('Integração Windows', str(exc), parent=root)
     root.after(100, poll)
+    root.after(1500, periodic_check)
     if not ready:
         root.after(200, settings)
     if startup_launch and ready:

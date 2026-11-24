@@ -15,7 +15,7 @@ Projeto independente, sem vínculo oficial com Tuya, ASUS, OpenRGB ou Google. Os
 
 ## Interface
 
-Tema escuro, prévia da seleção, paleta de cores, barra de brilho com preenchimento lilás e puxador circular e botão de aplicar destacado. O rodapé inclui o crédito clicável da System Bee Solutions. A tela principal concentra os ajustes de iluminação. **Arquivo** reúne minimizar para a bandeja e sair; **Opções** reúne configurações e atualização do estado. A prévia é ilustrativa; a aparência física depende da fita.
+Tema escuro com cards de cantos contínuos (squircle) e raios concêntricos, prévia com o brilho da cor escolhida, paleta em círculos, barras de brilho e temperatura (clique, arraste, roda do mouse ou setas) e botão de aplicar destacado. O ícone da bandeja, da janela e do executável mostra um LED na cor atual. O rodapé inclui o crédito clicável da System Bee Solutions. A tela principal concentra os ajustes de iluminação. **Arquivo** reúne minimizar para a bandeja e sair; **Opções** reúne configurações e atualização do estado. A prévia é ilustrativa; a aparência física depende da fita.
 
 ## Recursos
 
@@ -84,6 +84,8 @@ Clique em **Salvar e testar conexão**. Depois:
 
 - **Abas de dispositivo:** Geral, Fita, Placa-mãe e Memórias. Cada aba guarda a própria cor, o brilho e o efeito. **Aplicar em Geral** envia a mesma seleção para todos e a copia para as outras abas. Ligar/Desligar valem para a aba aberta, e o menu da bandeja liga/desliga tudo.
 - **Modos:** Cor, Branco e Efeitos.
+- **Conflitos de cores:** se as memórias ou a placa mostrarem cores diferentes das escolhidas, outro programa está gravando nos LEDs. O app procura os dois culpados comuns ao abrir, a cada 5 minutos e depois de aplicar: o **LightingService** da ASUS (Aura/Armoury Crate, que atualizações costumam reativar) e uma **segunda cópia do OpenRGB** (ex.: atalho na pasta Inicializar enquanto o OpenRGB já roda como serviço). Um aviso amarelo aparece com o botão **Corrigir** (também no menu da bandeja). Ele pede permissão de administrador uma vez, desativa o serviço da ASUS, move o atalho duplicado para `%APPDATA%\ControleLED\backup-inicializar`, fecha a cópia extra e reaplica as cores.
+- **Atalhos na bandeja:** clique com o botão direito no ícone perto do relógio para trocar sem abrir a janela: **Cores** (8 cores e branco quente, neutro e frio), **Efeitos** (com velocidade) e **Brilho** (10% a 100%). O atalho vale para tudo, como a aba Geral. O item atual fica marcado e o ícone assume a cor escolhida.
 - **Efeitos predefinidos:** Estático, Respirar, Piscar, Arco-íris, Ciclo de cores, Perseguição e Cintilar, com velocidade Lenta, Média ou Rápida. Na fita viram cenas Tuya (`scene_data_v2`); na placa e nas memórias usam os efeitos de hardware do OpenRGB. Respirar, Piscar e Perseguição usam a cor escolhida. Na placa e nas memórias, Arco-íris, Ciclo e Cintilar seguem o brilho do próprio hardware.
 
 ## LEDs da placa-mãe e das memórias (OpenRGB)

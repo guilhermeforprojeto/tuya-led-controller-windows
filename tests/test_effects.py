@@ -5,6 +5,14 @@ from effects import EFFECTS, tuya_scene
 
 
 class EffectTests(unittest.TestCase):
+    def test_quick_shortcuts_valid(self):
+        from effects import QUICK_COLOURS, QUICK_BRIGHTNESS
+        import re
+        for _, hex_ in QUICK_COLOURS:
+            # minúsculo: o menu compara com a cor salva em minúsculas
+            self.assertRegex(hex_, r'^#[0-9a-f]{6}$')
+        self.assertTrue(all(1 <= b <= 100 for b in QUICK_BRIGHTNESS))
+
     def test_scenes_within_tuya_limits(self):
         for key, *_ in EFFECTS:
             if key == 'static':

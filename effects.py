@@ -17,7 +17,13 @@ SPEEDS = [('slow', 'Lenta'), ('medium', 'Média'), ('fast', 'Rápida')]
 # Fração de 0 (lento) a 1 (rápido), usada nos dois sistemas.
 SPEED_FRACTION = {'slow': 0.0, 'medium': 0.5, 'fast': 1.0}
 
-RAINBOW_HUES = [0, 30, 60, 120, 180, 240, 280, 320]
+# Atalhos do menu da bandeja.
+QUICK_COLOURS = [('Vermelho', '#ff0000'), ('Laranja', '#ff6a00'), ('Amarelo', '#ffd000'),
+                 ('Verde', '#00ff40'), ('Ciano', '#00e5ff'), ('Azul', '#0040ff'),
+                 ('Roxo', '#a020f0'), ('Rosa', '#ff2a9d')]
+QUICK_BRIGHTNESS = [10, 25, 50, 75, 100]
+
+RAINBOW_HUES =[0, 30, 60, 120, 180, 240, 280, 320]
 FLICKER_HUES = [200, 20, 300, 90, 0, 260, 160, 45]
 
 

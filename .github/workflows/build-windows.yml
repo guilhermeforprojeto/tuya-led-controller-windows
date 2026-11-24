@@ -21,7 +21,9 @@ jobs:
       - name: Run mocked tests
         run: python -m unittest discover -s tests -v
       - name: Build executable
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name ControleLED --hidden-import pystray._win32 controle_led.py
+        run: |
+          python -c "import icon_art; icon_art.save_ico('ControleLED.ico')"
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name ControleLED --icon ControleLED.ico --hidden-import pystray._win32 controle_led.py
       - uses: actions/upload-artifact@v4
         with:
           name: ControleLED-Windows

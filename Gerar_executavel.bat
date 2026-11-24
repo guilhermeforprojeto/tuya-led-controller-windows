@@ -13,7 +13,9 @@ if not exist .venv\Scripts\python.exe (
 )
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 if errorlevel 1 goto erro
-.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name ControleLED --hidden-import pystray._win32 controle_led.py
+.venv\Scripts\python.exe -c "import icon_art; icon_art.save_ico('ControleLED.ico')"
+if errorlevel 1 goto erro
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name ControleLED --icon ControleLED.ico --hidden-import pystray._win32 controle_led.py
 if errorlevel 1 goto erro
  echo.
  echo Pronto! Abra ControleLED.exe na pasta dist.
