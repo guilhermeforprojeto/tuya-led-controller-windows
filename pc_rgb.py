@@ -329,6 +329,26 @@ class RamAnimator:
                 st['on'] = on
             self._touch()
 
+    solo = None  # calibração: só este pente aceso (branco), os outros apagados
+
+    def set_solo(self, address, fallback=None):
+        """Acende só um pente. Ao terminar (None), pentes que o app ainda não
+        controlava recebem a seleção `fallback` em vez de ficarem apagados."""
+        with self._cond:
+            if address is None and fallback is not None:
+                missing = [a for a in self.known if a not in self.sticks]
+                if missing:
+                    self._group += 1
+                    for a in missing:
+                        self.sticks[a] = {'sel': dict(fallback), 'on': True, 'group': self._group}
+            self.solo = address
+            self._touch()
+
+    def position_states(self):
+        """[ligado?] por posição 1–N, na ordem escolhida."""
+        with self._cond:
+            return [self.sticks.get(a, {'on': True})['on'] for a in self.known]
+
     def identify(self, address, seconds=2.0):
         with self._cond:
             self._flash[address] = time.time() + seconds
@@ -364,6 +384,9 @@ class RamAnimator:
     # ---- cálculo (puro, testável)
     def colours(self, t, ordered):
         """{endereço: [rgb × 5]} para o instante t."""
+        if self.solo is not None:
+            return {a: [(255, 255, 255) if a == self.solo else (0, 0, 0)] * LEDS_PER_STICK
+                    for a in ordered}
         out = stick_colours(self.sticks, ordered, t)
         for a, until in list(self._flash.items()):
             if until > t:
@@ -375,6 +398,8 @@ class RamAnimator:
         return out
 
     def _animated(self, now):
+        if self.solo is not None:
+            return False
         if any(until > now for until in self._flash.values()):
             return True
         return any(s['on'] and is_animated(s['sel']) for s in self.sticks.values())
@@ -423,7 +448,10 @@ class RamAnimator:
 
     def order_known(self, found):
         known = [a for a in self.order if a in found]
-        return known + sorted(a for a in found if a not in known)
+        self.known = known + sorted(a for a in found if a not in known)
+        return list(self.known)
+
+    known = []  # últimos endereços vistos, na ordem escolhida
 
 
 def pick_mode(device, names):

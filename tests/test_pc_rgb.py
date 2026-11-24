@@ -90,6 +90,24 @@ class PcRgbTests(unittest.TestCase):
         self.pc.ram._send(0)
         self.assertEqual(self.last_colours(self.devs[3])[0], (255, 0, 0))
 
+    def test_calibration_lights_only_one_stick(self):
+        self.pc.ram.addresses()
+        self.pc.ram.set_solo('0x71')
+        self.pc.ram._send(0)
+        self.assertEqual(self.last_colours(self.devs[1]), [(255, 255, 255)] * 5)
+        self.assertEqual(self.last_colours(self.devs[3]), [(0, 0, 0)] * 5)
+        # Ao terminar, pentes sem estado recebem a seleção atual em vez de ficarem apagados.
+        self.pc.ram.set_solo(None, {'mode': 'colour', 'colour': '#00ff00'})
+        self.pc.ram._send(0)
+        self.assertEqual(self.last_colours(self.devs[3])[0], (0, 255, 0))
+
+    def test_position_states_follow_order(self):
+        self.pc.ram.order = ['0x71', '0x70']
+        self.pc.apply_selection({'mode': 'colour', 'colour': '#ff0000'}, (1,))
+        self.pc.ram_power(False, [2])   # posição 2 = 0x70
+        self.assertEqual(self.pc.ram.position_states(), [True, False])
+        self.assertFalse(self.pc.ram.snapshot()['0x70']['on'])
+
     def test_custom_order(self):
         self.pc.ram.order = ['0x71', '0x70']
         self.assertEqual(self.pc.ram.resolve([1]), ['0x71'])

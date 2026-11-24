@@ -343,6 +343,44 @@ class StickChips(_Canvas):
                              font=(FONT, 10, 'bold' if on else 'normal'))
 
 
+class StickPower(StickChips):
+    """Linha de baixo dos pentes: Ligar/Desligar de cada um e, na coluna
+    "Todos", Apagar outros (apaga os não marcados). states: '1' ligado, '0'."""
+    def __init__(self, parent, states, count, on_toggle, on_others, height=26):
+        self.states, self.on_toggle, self.on_others = states, on_toggle, on_others
+        super().__init__(parent, states, count, height=height)
+
+    def _click(self, event):
+        i = self._index_at(event.x)
+        if i is None:
+            return
+        if i == self._n():
+            self.on_others()
+        else:
+            self.on_toggle(i + 1)
+
+    def toggle(self, n):
+        self.on_toggle(n)
+
+    def redraw(self):
+        self.delete('all')
+        h = self.winfo_height()
+        states = self.states.get()
+        for i in range(self._n() + 1):
+            x0, x1 = self._cell(i)
+            base = self.cget('bg')
+            if i == self._n():
+                text, fg, fill = 'Apagar outros', MUTED, base
+            else:
+                on = states[i:i + 1] != '0'
+                text, fg = ('Desligar', MUTED) if on else ('Ligar', WARN)
+                fill = base if on else mix(base, WARN, 0.12)
+            if i == self._hover:
+                fill, fg = mix(base, '#ffffff', 0.07), TEXT
+            self.shape(x0, 0, x1, h - 1, FREE_R, fill=fill)
+            self.create_text((x0 + x1) / 2, h / 2, text=text, fill=fg, font=(FONT, 8))
+
+
 class Swatches(_Canvas):
     """Paleta em círculos; o anel marca a cor atual. O último abre o seletor."""
     SIZE, GAP = 28, 10
@@ -570,13 +608,16 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
     stick_head = tk.Frame(stick_box, bg=BG)
     stick_head.pack(fill='x', pady=(0, 6))
     tk.Label(stick_head, text='Pentes', bg=BG, fg=TEXT_2, font=(FONT, 10, 'bold')).pack(side='left')
-    order_link = tk.Label(stick_head, text='Ordem e identificação', bg=BG, fg=ACCENT,
+    order_link = tk.Label(stick_head, text='Calibrar ordem', bg=BG, fg=ACCENT,
                           cursor='hand2', font=(FONT, 9))
     order_link.pack(side='right')
     order_link.bind('<Button-1>', lambda _: ram and ram.open_order())
     order_link.bind('<Enter>', lambda _: order_link.configure(fg=ACCENT_SOFT))
     order_link.bind('<Leave>', lambda _: order_link.configure(fg=ACCENT))
     StickChips(stick_box, v.sticks, v.stick_count).pack(fill='x')
+    StickPower(stick_box, v.stick_on, v.stick_count,
+               lambda p: ram and ram.toggle(p), lambda: ram and ram.only_selected()).pack(
+        fill='x', pady=(4, 0))
     stick_hint = tk.Label(stick_box, bg=BG, fg=MUTED, font=(FONT, 8), anchor='w')
     stick_hint.pack(fill='x', pady=(4, 10))
 
@@ -723,7 +764,8 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
             colour_tools.pack(fill='x')
         if sticks_mode():
             stick_box.pack(fill='x', after=targets)
-            stick_hint.configure(text='Escolha um ou mais pentes; os outros ficam como estão.')
+            stick_hint.configure(text='Aplicar muda só os marcados; os outros continuam como estão '
+                                      '(use Desligar ou Apagar outros).')
         else:
             stick_box.pack_forget()
         action.set_text(f'Aplicar em {where}')

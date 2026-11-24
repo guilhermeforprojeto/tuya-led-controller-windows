@@ -200,6 +200,7 @@ def main():
         warning_short=tk.StringVar(value=''),
         sticks=tk.StringVar(value=config.get('ram_selected') or '1234'),
         stick_count=tk.IntVar(value=int(config.get('ram_count') or 4)),
+        stick_on=tk.StringVar(value='1111'),
         status=tk.StringVar(value='Escolha a aba, a cor ou o efeito e clique em Aplicar.' if ready
                             else 'Configure as credenciais para começar.'))
     status, power = v.status, v.power
@@ -319,8 +320,43 @@ def main():
         if any(name != 'fita' for name in done):
             check_conflicts()
 
+    def sync_stick_on():
+        states = state['pc'].ram.position_states()
+        if states:
+            v.stick_on.set(''.join('1' if on else '0' for on in states))
+
+    def stick_power(on_for, label):
+        """on_for(posição) → True/False/None (None = não mexe)."""
+        count = v.stick_count.get()
+        plan = {p: on_for(p) for p in range(1, count + 1)}
+        plan = {p: on for p, on in plan.items() if on is not None}
+        sel = dict(selections['ram'])
+
+        def job():
+            for on in (True, False):
+                chosen = [p for p, value in plan.items() if value is on]
+                if chosen:
+                    state['pc'].ram_power(on, chosen, fallback=sel)
+            return [NAMES['ram']], []
+
+        def done(result):
+            report(result)
+            status.set(label)
+        submit(job, done)
+
+    def toggle_stick(position):
+        current = v.stick_on.get()[position - 1:position] != '0'
+        stick_power(lambda p: (not current) if p == position else None,
+                    f"Pente {position} {'desligado' if current else 'ligado'}.")
+
+    def only_selected():
+        chosen = set(stick_positions() or [])
+        stick_power(lambda p: None if p in chosen else False,
+                    'Pentes não marcados apagados.')
+
     def save_ram_state():
         """Guarda o estado de cada pente para restaurar ao abrir o app."""
+        sync_stick_on()
         config['ram_sticks'] = state['pc'].ram.snapshot()
         config['ram_selected'] = v.sticks.get()
         try:
@@ -814,7 +850,7 @@ def main():
         count = v.stick_count.get()
         names = [f'p{i}' for i in range(1, count + 1)]
         saved = state['pc'].ram.snapshot()
-        order = state['pc'].ram.order_known(list(saved)) if saved else []
+        order = state['pc'].ram.known or state['pc'].ram.order_known(list(saved))
         sticks = {}
         for i, name in enumerate(names):
             address = order[i] if i < len(order) else None
@@ -828,21 +864,22 @@ def main():
 
     def open_stick_order():
         show()
-        StickOrderWindow(root, state['pc'], on_order_saved)
+        StickOrderWindow(root, state['pc'], on_order_saved, fallback=dict(selections['ram']))
 
     def on_order_saved(order):
         config['ram_order'] = list(order)
         config['ram_count'] = len(order)
         v.stick_count.set(len(order))
         state['pc'].ram.order = list(order)
-        try:
-            save_config(config)
-        except OSError:
-            pass
+        state['pc'].ram.order_known(list(order))
+        sync_stick_on()
+        save_ram_state()
+        status.set('Ordem dos pentes salva.')
 
     panel = build_panel(frame, v, pick, apply, set_power, EFFECTS, SPEEDS,
                         lambda: results.put(('fix', None, None)),
-                        SimpleNamespace(preview=ram_preview, open_order=open_stick_order))
+                        SimpleNamespace(preview=ram_preview, open_order=open_stick_order,
+                                        toggle=toggle_stick, only_selected=only_selected))
     set_header_icon = panel.set_icon
 
     def show():
@@ -989,7 +1026,12 @@ def main():
     root.after(500, animation_tick)
     if config.get('pc_sync') and config.get('ram_sticks'):
         # Efeitos das memórias são animados pelo app: retoma o estado salvo de cada pente.
-        root.after(2000, lambda: state['pc'].ram.restore(config['ram_sticks']))
+        def restore_sticks():
+            ram = state['pc'].ram
+            ram.restore(config['ram_sticks'])
+            ram.order_known([a for a in (config.get('ram_order') or sorted(config['ram_sticks']))])
+            sync_stick_on()
+        root.after(2000, restore_sticks)
     if not ready:
         root.after(200, settings)
     if startup_launch and ready:

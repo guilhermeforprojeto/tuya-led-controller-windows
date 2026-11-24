@@ -99,31 +99,50 @@ def _window(root, title, size):
 
 
 class StickOrderWindow:
-    """Ordem dos pentes: "Piscar" mostra qual pente físico é qual, e as setas
-    trocam a posição. A ordem define o sentido dos efeitos (1 → 4)."""
+    """Calibração dos pentes: acende um por vez (branco, os outros apagados) e
+    pergunta em qual encaixe da placa ele está. No fim mostra a ordem para
+    conferir (Piscar) e salvar. A ordem define o sentido dos efeitos (1 → 4)."""
 
-    def __init__(self, root, pc, on_save):
-        self.pc, self.on_save = pc, on_save
-        self.win = _window(root, 'Ordem dos pentes', '460x460')
-        self.win.minsize(420, 360)
+    def __init__(self, root, pc, on_save, fallback=None):
+        self.pc, self.on_save, self.fallback = pc, on_save, fallback
+        self.win = _window(root, 'Calibrar pentes', '480x600')
+        self.win.minsize(440, 420)
+        self.win.protocol('WM_DELETE_WINDOW', self.close)
         box = tk.Frame(self.win, bg=BG, padx=20, pady=18)
         box.pack(fill='both', expand=True)
-        _label(box, 'Ordem dos pentes', size=15, bold=True).pack(anchor='w')
-        _label(box, 'Clique em Piscar para ver qual pente acende, e use as setas até a '
-               'posição 1 ser o pente da esquerda (ou o mais perto do processador). Os '
-               'efeitos andam do 1 para o último.', fg=MUTED, wraplength=410).pack(anchor='w', pady=(4, 12))
-        self.rows = tk.Frame(box, bg=BG)
-        self.rows.pack(fill='x')
+        _label(box, 'Calibrar pentes', size=15, bold=True).pack(anchor='w')
+        _label(box, 'Conte os encaixes da placa-mãe a partir do processador: o mais perto '
+               'dele é o 1. Vamos acender um pente por vez para você dizer onde ele está.',
+               fg=MUTED, wraplength=430).pack(anchor='w', pady=(4, 12))
+        # Rodapé reservado primeiro: o conteúdo nunca empurra os botões para fora.
+        self.buttons = tk.Frame(box, bg=BG)
+        self.buttons.pack(fill='x', side='bottom', pady=(14, 0))
         self.msg = tk.StringVar(value='Procurando os pentes…')
-        _label(box, textvariable=self.msg, fg=MUTED).pack(anchor='w', pady=(10, 0))
-        buttons = tk.Frame(box, bg=BG)
-        buttons.pack(fill='x', side='bottom', pady=(14, 0))
-        PillButton(buttons, 'Cancelar', self.win.destroy, height=40).pack(
-            side='left', expand=True, fill='x', padx=(0, 4))
-        PillButton(buttons, 'Salvar ordem', self.save, height=40, fill=ACCENT,
-                   hover=ACCENT_HOVER, fg=ACCENT_TEXT).pack(side='left', expand=True, fill='x', padx=(4, 0))
-        self.order = []
+        _label(box, textvariable=self.msg, fg=MUTED, wraplength=430).pack(
+            side='bottom', anchor='w', pady=(10, 0))
+        self.body = tk.Frame(box, bg=BG)
+        self.body.pack(fill='both', expand=True)
+        self.found, self.order, self.answers, self.step = [], [], {}, 0
         self.win.after(50, self._load)
+
+    # ---- utilidades
+    def _clear(self):
+        for frame in (self.body, self.buttons):
+            for child in frame.winfo_children():
+                child.destroy()
+
+    def _footer(self, primary_text=None, primary=None):
+        PillButton(self.buttons, 'Cancelar', self.close, height=40).pack(
+            side='left', expand=True, fill='x', padx=(0, 4 if primary else 0))
+        if primary:
+            PillButton(self.buttons, primary_text, primary, height=40, fill=ACCENT,
+                       hover=ACCENT_HOVER, fg=ACCENT_TEXT).pack(side='left', expand=True,
+                                                                fill='x', padx=(4, 0))
+
+    def close(self):
+        self.pc.ram.set_solo(None, self.fallback)
+        if self.win.winfo_exists():
+            self.win.destroy()
 
     def _load(self):
         result = {}
@@ -141,39 +160,118 @@ class StickOrderWindow:
                 self.win.after(100, wait)
             elif 'error' in result:
                 self.msg.set(result['error'])
+                self._footer()
+            elif not result['order']:
+                self.msg.set('Nenhum pente encontrado. Abra o OpenRGB como administrador.')
+                self._footer()
             else:
-                self.order = result['order']
-                self.msg.set(f'{len(self.order)} pentes encontrados.' if self.order else
-                             'Nenhum pente encontrado. Abra o OpenRGB como administrador.')
-                self.render()
+                self.found = result['order']
+                self.order = list(self.found)
+                self.msg.set(f'{len(self.found)} pentes encontrados.')
+                self.intro()
         wait()
 
-    def render(self):
-        for child in self.rows.winfo_children():
-            child.destroy()
+    # ---- telas
+    def intro(self):
+        self._clear()
+        card = RoundBox(self.body, pad=14, radius=16)
+        card.pack(fill='x')
+        _label(card.body, 'Ordem atual', bold=True, size=10).pack(anchor='w')
+        _label(card.body, 'Se algum pente estiver no lugar errado (ex.: o 2 acende no encaixe 3), '
+               'calibre. Leva menos de um minuto.', fg=MUTED, wraplength=390).pack(anchor='w', pady=(4, 0))
+        self._footer('Começar calibração', self.ask_next)
+        self.render_list(show_arrows=False)
+
+    def ask_next(self):
+        if self.step >= len(self.found):
+            return self.finish()
+        address = self.found[self.step]
+        free = [p for p in range(1, len(self.found) + 1) if p not in self.answers.values()]
+        if len(free) == 1:  # o último só pode ir para o encaixe que sobrou
+            self.answers[address] = free[0]
+            self.step += 1
+            return self.ask_next()
+        self.pc.ram.set_solo(address)
+        self._clear()
+        _label(self.body, f'Pente {self.step + 1} de {len(self.found)}', fg=ACCENT_SOFT,
+               bold=True).pack(anchor='w')
+        _label(self.body, 'Um pente acendeu em branco e os outros apagaram.\n'
+               'Em qual encaixe da placa ele está?', size=12, bold=True,
+               wraplength=430).pack(anchor='w', pady=(6, 14))
+        row = tk.Frame(self.body, bg=BG)
+        row.pack(fill='x')
+        for p in range(1, len(self.found) + 1):
+            used = p not in free
+            btn = PillButton(row, str(p), (lambda p=p: self.answer(address, p)) if not used else (lambda: None),
+                             height=56, font=(FONT, 16, 'bold'),
+                             fill=BG if used else SURFACE_2, hover=BG if used else SURFACE_3,
+                             fg=SURFACE_3 if used else TEXT)
+            btn.pack(side='left', expand=True, fill='x', padx=3)
+        _label(self.body, 'Nenhum acendeu? Confira se o OpenRGB está aberto e clique em Cancelar.',
+               fg=MUTED, wraplength=430).pack(anchor='w', pady=(14, 0))
+        self.msg.set('Encaixes já usados ficam apagados.')
+        self._footer()
+        if self.step:
+            back = _small(self.buttons, 'Voltar', self.back, width=80)
+            back.pack(side='left', padx=(8, 0))
+
+    def answer(self, address, position):
+        self.answers[address] = position
+        self.step += 1
+        self.ask_next()
+
+    def back(self):
+        self.step = max(0, self.step - 1)
+        self.answers.pop(self.found[self.step], None)
+        self.ask_next()
+
+    def finish(self):
+        self.pc.ram.set_solo(None)
+        self.order = sorted(self.found, key=lambda a: self.answers[a])
+        self._clear()
+        _label(self.body, 'Pronto. Confira:', size=12, bold=True).pack(anchor='w', pady=(0, 4))
+        _label(self.body, 'Piscar acende o pente de branco por 2 segundos. Se algo ainda estiver '
+               'errado, ajuste com as setas ou calibre de novo.', fg=MUTED,
+               wraplength=430).pack(anchor='w', pady=(0, 10))
+        self.render_list(show_arrows=True)
+        self.msg.set('')
+        self._footer('Salvar ordem', self.save)
+        _small(self.buttons, 'Calibrar de novo', self.restart, width=130).pack(side='left', padx=(8, 0))
+
+    def restart(self):
+        self.answers, self.step = {}, 0
+        self.ask_next()
+
+    def render_list(self, show_arrows):
+        holder = getattr(self, 'list_frame', None)
+        if holder is not None and holder.winfo_exists():
+            holder.destroy()
+        self.list_frame = holder = tk.Frame(self.body, bg=BG)
+        holder.pack(fill='x', pady=(10, 0))
         for i, address in enumerate(self.order):
-            card = RoundBox(self.rows, pad=10, radius=14)
+            card = RoundBox(holder, pad=8, radius=12)
             card.pack(fill='x', pady=(0, 6))
             row = card.body
-            _label(row, str(i + 1), size=14, bold=True, fg=ACCENT_SOFT).pack(side='left', padx=(4, 12))
+            _label(row, str(i + 1), size=14, bold=True, fg=ACCENT_SOFT).pack(side='left', padx=(6, 12))
             texts = tk.Frame(row, bg=SURFACE)
             texts.pack(side='left', fill='x', expand=True)
-            _label(texts, f'Posição {i + 1}', bold=True, size=10).pack(anchor='w')
+            _label(texts, f'Encaixe {i + 1}', bold=True, size=10).pack(anchor='w')
             _label(texts, f'Endereço {address}', fg=MUTED, size=8).pack(anchor='w')
-            _small(row, '↓', lambda i=i: self.move(i, 1), width=34).pack(side='right')
-            _small(row, '↑', lambda i=i: self.move(i, -1), width=34).pack(side='right', padx=(6, 6))
+            if show_arrows:
+                _small(row, '↓', lambda i=i: self.move(i, 1), width=34).pack(side='right')
+                _small(row, '↑', lambda i=i: self.move(i, -1), width=34).pack(side='right', padx=6)
             _small(row, 'Piscar', lambda a=address: self.pc.ram.identify(a), width=70).pack(side='right')
 
     def move(self, i, step):
         j = i + step
         if 0 <= j < len(self.order):
             self.order[i], self.order[j] = self.order[j], self.order[i]
-            self.render()
+            self.render_list(show_arrows=True)
 
     def save(self):
         if self.order:
             self.on_save(self.order)
-        self.win.destroy()
+        self.close()
 
 
 class ConflictsWindow:

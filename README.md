@@ -176,9 +176,11 @@ Desenvolvido por **Guilherme Santana Santos**. [System Bee Solutions](https://sy
 
 Na aba **Memórias** aparecem os pentes **1, 2, 3, 4** e **Todos**. Escolha um ou mais e
 clique em Aplicar, Ligar ou Desligar: só os pentes marcados mudam, os outros ficam como
-estão.
+estão. Embaixo de cada pente há **Desligar/Ligar**, e **Apagar outros** apaga todos os não marcados.
 
-- **Ordem e identificação:** o botão **Piscar** acende um pente de branco para você ver
+- **Calibrar ordem:** acende um pente por vez e pergunta em qual encaixe da placa ele está
+  (contando a partir do processador); no fim dá para conferir com **Piscar**, ajustar com as
+  setas e salvar. Também dá para fazer à mão: o botão **Piscar** acende um pente de branco para você ver
   qual é qual, e as setas trocam a posição. Os efeitos andam do pente 1 para o último.
 - Os efeitos das memórias são calculados pelo próprio app (cerca de 30 quadros por
   segundo), por isso ficam em ordem e sincronizados. A prévia da janela, o ícone da
