@@ -1,4 +1,5 @@
 """Janelas secundárias: programas que interferem e rotinas/perfis."""
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import ttk
@@ -6,7 +7,7 @@ from tkinter import ttk
 from automation import (ACTIONS, WHEN, DAY_NAMES, describe_days, describe_selection,
                         new_id, valid_time)
 from conflicts import KNOWN_NAMES
-from interface import (BG, SURFACE, SURFACE_2, SURFACE_3, TEXT, MUTED, ACCENT, ACCENT_HOVER, ACCENT_SOFT,
+from interface import (BG, SURFACE, SURFACE_2, SURFACE_3, TEXT, TEXT_2, MUTED, ACCENT, ACCENT_HOVER, ACCENT_SOFT,
                        ACCENT_TEXT, WARN, WARN_BG, FONT, CHIP_R, RoundBox, PillButton,
                        Switch, ChipGrid, _Canvas, mix)
 
@@ -100,7 +101,7 @@ class ConflictsWindow:
     """Lista o que interfere nos LEDs, com instruções e ações."""
 
     def __init__(self, root, actions):
-        self.actions = actions  # stop, uninstall(cmd), settings, recheck
+        self.actions = actions  # stop, remove(cmds, findings), settings, recheck
         self.win = _window(root, 'Programas que interferem nos LEDs', '600x680')
         top = tk.Frame(self.win, bg=BG, padx=18, pady=14)
         top.pack(fill='x')
@@ -133,6 +134,10 @@ class ConflictsWindow:
             return
         self.area.clear()
         body = self.area.body
+        when = time.strftime('%H:%M:%S')
+        self.state.set(f'Verificado às {when}: ' + (
+            'nenhum programa interferindo.' if not findings else
+            ', '.join(f['name'] for f in findings) + ' ainda encontrado(s).'))
         if not findings:
             ok = RoundBox(body, fill=mix(SURFACE, OK, 0.12))
             ok.pack(fill='x', pady=(0, 10))
@@ -144,8 +149,12 @@ class ConflictsWindow:
             head = tk.Frame(card.body, bg=SURFACE)
             head.pack(fill='x')
             _label(head, f['name'], size=11, bold=True).pack(side='left')
-            _label(head, 'ATIVO AGORA' if f['active'] else 'INSTALADO',
+            _label(head, 'ATIVO AGORA' if f['active'] else 'INSTALADO · PARADO',
                    fg=DANGER if f['active'] else WARN, bold=True).pack(side='right')
+            if not f['active']:
+                _label(card.body, 'Não está rodando agora, mas pode voltar a mudar as cores quando '
+                       'o Windows ou outro app da ASUS o iniciar.', fg=MUTED,
+                       wraplength=500).pack(anchor='w', pady=(6, 0))
             if f['running']:
                 _label(card.body, 'Rodando: ' + ', '.join(sorted(set(f['running']))), fg=MUTED,
                        wraplength=500).pack(anchor='w', pady=(6, 0))
@@ -153,11 +162,22 @@ class ConflictsWindow:
                 _label(card.body, 'Serviços: ' + ', '.join(
                     n + (' (rodando)' if r else ' (ligado)') for n, r in f['services']),
                     fg=MUTED, wraplength=500).pack(anchor='w', pady=(4, 0))
+            grouped = {}
             for name, cmd in f['installed']:
+                grouped.setdefault(name, []).append(cmd)
+            if grouped:
+                every = [c for cmds in grouped.values() for c in cmds]
+                top = tk.Frame(card.body, bg=SURFACE)
+                top.pack(fill='x', pady=(10, 0))
+                _label(top, f'{len(grouped)} componente(s) instalado(s)', fg=TEXT_2,
+                       bold=True).pack(side='left')
+                _small(top, 'Remover todos', lambda c=every, f=f: self.actions['remove'](c, [f]),
+                       fill=WARN, fg='#2a1c05', width=120).pack(side='right')
+            for name, cmds in grouped.items():
                 row = tk.Frame(card.body, bg=SURFACE)
                 row.pack(fill='x', pady=(6, 0))
                 _label(row, '• ' + name).pack(side='left')
-                _small(row, 'Desinstalar', lambda c=cmd: self.actions['uninstall'](c)).pack(side='right')
+                _small(row, 'Desinstalar', lambda c=cmds, f=f: self.actions['remove'](c, [f])).pack(side='right')
             for pkg in f['store']:
                 row = tk.Frame(card.body, bg=SURFACE)
                 row.pack(fill='x', pady=(6, 0))

@@ -81,5 +81,21 @@ class ConflictTests(unittest.TestCase):
         self.assertIn('$_.Id -ne $server', text)
 
 
+class RemovalTests(unittest.TestCase):
+    def test_msi_repair_becomes_uninstall(self):
+        from winproc import removal_command
+        self.assertEqual(removal_command('MsiExec.exe /I{1E00994F-C378-4D13-9703-CA8D67B270B7}'),
+                         'MsiExec.exe /X{1E00994F-C378-4D13-9703-CA8D67B270B7} /qb /norestart')
+        self.assertEqual(removal_command('"C:\\x\\setup.exe" /uninstall', '"C:\\x\\setup.exe" /uninstall /quiet'),
+                         '"C:\\x\\setup.exe" /uninstall /quiet')
+        self.assertEqual(removal_command('"C:\\y\\unins000.exe"'), '"C:\\y\\unins000.exe"')
+
+    def test_remove_script_runs_each_and_waits(self):
+        from conflicts import remove_script
+        text = remove_script(['"C:\\a b\\s.exe" /uninstall /quiet', 'MsiExec.exe /X{X} /qb'])
+        self.assertEqual(text.count('-Wait'), 2)
+        self.assertIn("'/c \"\"C:\\a b\\s.exe\" /uninstall /quiet\"'", text)
+
+
 if __name__ == '__main__':
     unittest.main()

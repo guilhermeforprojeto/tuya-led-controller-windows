@@ -103,7 +103,7 @@ def main():
             return
     from PIL import ImageTk
     from icon_art import draw_icon, icon_for
-    from conflicts import (find_conflicts, stop_now, uninstall, open_apps_settings,
+    from conflicts import (find_conflicts, stop_now, remove_programs, open_apps_settings,
                            summary as conflict_summary)
     from dialogs import ConflictsWindow, AutomationWindow
     from flyout import TrayFlyout, tray_icon_class
@@ -335,6 +335,19 @@ def main():
                 if cb == 'flyout':
                     state['flyout'].toggle()
                     continue
+                if cb == 'removed':
+                    state['fixing'] = False
+                    if error:
+                        set_conflict_status(error)
+                        log('Remover programas: ' + error)
+                    elif value:
+                        log('Remoção de programas de RGB concluída; verificando de novo.')
+                        set_conflict_status('Remoção concluída. Verificando de novo…')
+                        reapply_pc()
+                        check_conflicts()
+                    else:
+                        set_conflict_status('Cancelado no pedido de permissão.')
+                    continue
                 if cb == 'fixed':
                     state['fixing'] = False
                     if error:
@@ -491,8 +504,8 @@ def main():
             win.win.lift()
         else:
             win = state['conflict_win'] = ConflictsWindow(root, {
-                'stop': stop_conflicts, 'uninstall': uninstall_program,
-                'settings': open_apps_settings, 'recheck': check_conflicts})
+                'stop': stop_conflicts, 'remove': remove_selected,
+                'settings': open_apps_settings, 'recheck': recheck_conflicts})
         win.refresh(state['conflicts'])
         check_conflicts()
 
@@ -512,15 +525,23 @@ def main():
                 results.put(('fixed', None, str(exc)))
         threading.Thread(target=run, daemon=True).start()
 
-    def uninstall_program(cmd):
-        try:
-            if uninstall(cmd):
-                set_conflict_status('Desinstalador aberto. Ao terminar, reinicie o PC e clique '
-                                    'em Verificar de novo.')
-            else:
-                set_conflict_status('Desinstalação cancelada.')
-        except RuntimeError as exc:
-            set_conflict_status(str(exc))
+    def remove_selected(commands, found):
+        if state['fixing']:
+            return set_conflict_status('Aguarde a ação anterior terminar.')
+        state['fixing'] = True
+        set_conflict_status('Removendo… confirme o pedido de permissão do Windows. '
+                            'Pode levar alguns minutos.')
+
+        def run():
+            try:
+                results.put(('removed', remove_programs(commands, folder, found), None))
+            except Exception as exc:
+                results.put(('removed', None, str(exc)))
+        threading.Thread(target=run, daemon=True).start()
+
+    def recheck_conflicts():
+        set_conflict_status('Verificando…')
+        check_conflicts()
 
     def reapply_pc():
         parts = [p for p in active_parts('all') if p != 'strip']

@@ -31,7 +31,9 @@ SOFTWARE = [
                     'armourysocketserver.exe', 'armouryhtmldebugserver.exe', 'auracreator*.exe'],
          installed=r'\baura\b|armoury crate|aura creator', store=['armourycrate'],
          steps=['Clique em Parar agora: interrompe o Aura na hora (vale até reiniciar).',
-                'Desinstale o Armoury Crate e todos os componentes "AURA" listados abaixo.',
+                'Clique em Remover todos: desinstala os componentes "AURA" listados abaixo. Eles '
+                'ficam ocultos em Configurações → Aplicativos, por isso só dá para remover por aqui.',
+                'Se o Armoury Crate da Microsoft Store aparecer na lista, desinstale-o em Aplicativos.',
                 'Para remover os restos, use a ferramenta oficial da ASUS '
                 '"Armoury Crate Uninstall Tool" (link abaixo).',
                 'Na BIOS, desative a reinstalação automática: Advanced (ou Tool) → '
@@ -216,20 +218,29 @@ def stop_now(findings, folder):
                          f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"')
 
 
-def uninstall(command):
-    """Roda o desinstalador registrado do programa (com permissão de administrador)."""
-    if not command:
+def remove_script(commands, findings=(), backup_dir=''):
+    """PowerShell que para os programas e roda cada desinstalação, uma por vez."""
+    lines = stop_script(findings, backup_dir).splitlines() if findings else [
+        "$ErrorActionPreference = 'SilentlyContinue'"]
+    for cmd in commands:
+        if cmd:
+            lines.append('Start-Process -FilePath $env:ComSpec -ArgumentList '
+                         + _ps_quote(f'/c "{cmd}"') + ' -Wait -WindowStyle Hidden')
+    return '\r\n'.join(lines) + '\r\n'
+
+
+def remove_programs(commands, folder, findings=()):
+    """Desinstala (como administrador) e espera terminar.
+    False se a pessoa cancelar o pedido de permissão."""
+    commands = [c for c in commands if c]
+    if not commands:
         raise RuntimeError('Este programa não informa como desinstalar. Use Configurações → Aplicativos.')
-    import win32api
-    import win32con
-    try:
-        win32api.ShellExecute(0, 'runas', os.environ.get('COMSPEC', 'cmd.exe'),
-                              f'/c "{command}"', None, win32con.SW_HIDE)
-    except Exception as exc:
-        if getattr(exc, 'winerror', None) == 1223:
-            return False
-        raise RuntimeError(f'Não foi possível abrir o desinstalador: {exc}') from None
-    return True
+    folder = Path(folder)
+    script = folder / 'remover-programas-rgb.ps1'
+    script.write_text(remove_script(commands, findings, folder / 'backup-inicializar'),
+                      encoding='utf-8-sig')
+    return _run_elevated('powershell.exe',
+                         f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"')
 
 
 def open_apps_settings():

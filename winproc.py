@@ -5,6 +5,7 @@ o que permite checar a cada poucos segundos sem pesar no PC.
 """
 import ctypes
 import os
+import re
 from ctypes import wintypes
 
 TH32CS_SNAPPROCESS = 0x2
@@ -97,12 +98,32 @@ APPX_KEY = (r'Software\Classes\Local Settings\Software\Microsoft\Windows'
             r'\CurrentVersion\AppModel\Repository\Packages')
 
 
+MSI_INSTALL = re.compile(r'msiexec(\.exe)?\s+/[ix]\s*(\{[0-9a-f-]{36}\})', re.I)
+
+
+def removal_command(uninstall, quiet='', key_name=''):
+    """Comando que REMOVE o programa sem perguntas.
+
+    Vários instaladores registram "MsiExec /I{código}", que abre o reparo em vez
+    de desinstalar; troca por /X. Prefere a versão silenciosa quando existe.
+    """
+    if quiet:
+        return quiet
+    match = MSI_INSTALL.search(uninstall or '')
+    if match:
+        return f'MsiExec.exe /X{match.group(2)} /qb /norestart'
+    return uninstall or ''
+
+
 def installed_programs():
-    """[(nome, comando_de_desinstalação)] dos programas instalados."""
+    """[(nome, comando_de_remoção)] de cada registro de instalação, incluindo os
+    componentes ocultos de Configurações → Aplicativos (SystemComponent).
+    Um mesmo nome pode ter dois registros (pacote e MSI interno): o do pacote
+    vem primeiro; rodar os dois garante a remoção."""
     if os.name != 'nt':
         return []
     import winreg
-    found, seen = [], set()
+    entries = []
     for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
         for path in UNINSTALL_KEYS:
             try:
@@ -112,18 +133,24 @@ def installed_programs():
             with root:
                 for i in range(winreg.QueryInfoKey(root)[0]):
                     try:
-                        with winreg.OpenKey(root, winreg.EnumKey(root, i)) as key:
-                            name = winreg.QueryValueEx(key, 'DisplayName')[0]
-                            try:
-                                cmd = winreg.QueryValueEx(key, 'UninstallString')[0]
-                            except OSError:
-                                cmd = ''
+                        key_name = winreg.EnumKey(root, i)
+                        with winreg.OpenKey(root, key_name) as key:
+                            values = {}
+                            for field in ('DisplayName', 'UninstallString', 'QuietUninstallString'):
+                                try:
+                                    values[field] = winreg.QueryValueEx(key, field)[0]
+                                except OSError:
+                                    values[field] = ''
                     except OSError:
                         continue
-                    if name and name not in seen:
-                        seen.add(name)
-                        found.append((name, cmd))
-    return found
+                    name = values['DisplayName']
+                    if not name:
+                        continue
+                    cmd = removal_command(values['UninstallString'], values['QuietUninstallString'], key_name)
+                    if (name, cmd) not in entries:
+                        entries.append((name, cmd))
+    # Por nome; dentro do nome, pacotes antes do MSI.
+    return sorted(entries, key=lambda e: (e[0].lower(), 'msiexec' in e[1].lower()))
 
 
 def store_apps():
