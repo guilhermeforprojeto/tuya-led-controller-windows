@@ -106,6 +106,7 @@ def main():
     from conflicts import (find_conflicts, stop_now, uninstall, open_apps_settings,
                            summary as conflict_summary)
     from dialogs import ConflictsWindow, AutomationWindow
+    from flyout import TrayFlyout, tray_icon_class
     from automation import due_routines, pick_profile, ProfileSwitcher
     from winproc import process_names, foreground_process, windowed_apps
     from datetime import datetime
@@ -329,6 +330,9 @@ def main():
                 if cb == 'auto':
                     open_automation()
                     continue
+                if cb == 'flyout':
+                    state['flyout'].toggle()
+                    continue
                 if cb == 'fixed':
                     state['fixing'] = False
                     if error:
@@ -400,6 +404,8 @@ def main():
     def quick_apply(changes):
         """Atalho da bandeja: aplica a mudança em tudo (aba Geral)."""
         if state['busy']:
+            # Envio em andamento: guarda o último pedido e manda em seguida.
+            state['pending'] = lambda c=changes: not state['busy'] and (quick_apply(c) or True)
             return
         parts = active_parts('all')
         if not parts:
@@ -793,7 +799,21 @@ def main():
         radio=True) for value in QUICK_BRIGHTNESS]
 
     paint_window_icon(selections['all'])
-    icon = pystray.Icon('ControleLED', draw_icon(size=64, **icon_for(selections['all'])),
+
+    # Botão direito no ícone: painel no visual do app em vez do menu nativo.
+    flyout = TrayFlyout(root, SimpleNamespace(
+        selection=lambda: dict(selections['all']),
+        quick=quick_apply,
+        power=lambda on: set_power(on, 'all'),
+        open_main=show, open_auto=open_automation, open_conflicts=open_conflicts,
+        quit=quit_app, conflicts=lambda: state['conflicts'],
+        subtitle=lambda: power.get() + (' · Perfil: ' + state['profile_label']
+                                        if state['profile_label'] else ''),
+        icon_image=lambda size: ImageTk.PhotoImage(draw_icon(size=size, **icon_for(selections['all'])))))
+    state['flyout'] = flyout
+    IconClass = (tray_icon_class(lambda: results.put(('flyout', None, None)))
+                 if os.name == 'nt' else pystray.Icon)
+    icon = IconClass('ControleLED', draw_icon(size=64, **icon_for(selections['all'])),
                         'Controle LED · PC', menu=pystray.Menu(
         pystray.MenuItem('Abrir controles', lambda *_: results.put(('show', None, None)), default=True),
         pystray.MenuItem('⚠ Programas interferindo nos LEDs…', lambda *_: results.put(('fix', None, None)),
