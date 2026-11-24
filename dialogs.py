@@ -135,10 +135,12 @@ class ConflictsWindow:
         self.area.clear()
         body = self.area.body
         when = time.strftime('%H:%M:%S')
+        serious = [f for f in findings if f.get('severity') != 'leftover']
         self.state.set(f'Verificado às {when}: ' + (
-            'nenhum programa interferindo.' if not findings else
-            ', '.join(f['name'] for f in findings) + ' ainda encontrado(s).'))
-        if not findings:
+            ', '.join(f['name'] for f in serious) + ' ainda interferindo.' if serious else
+            'nenhum programa interferindo nos LEDs.'
+            + (' Há restos inativos (remover é opcional).' if findings else '')))
+        if not serious:
             ok = RoundBox(body, fill=mix(SURFACE, OK, 0.12))
             ok.pack(fill='x', pady=(0, 10))
             _label(ok.body, '✓ Nenhum programa interferindo foi encontrado.', fg=OK, size=10,
@@ -149,12 +151,18 @@ class ConflictsWindow:
             head = tk.Frame(card.body, bg=SURFACE)
             head.pack(fill='x')
             _label(head, f['name'], size=11, bold=True).pack(side='left')
-            _label(head, 'ATIVO AGORA' if f['active'] else 'INSTALADO · PARADO',
-                   fg=DANGER if f['active'] else WARN, bold=True).pack(side='right')
-            if not f['active']:
+            severity = f.get('severity', 'active' if f['active'] else 'installed')
+            badge, colour = {'active': ('ATIVO AGORA', DANGER), 'installed': ('INSTALADO', WARN),
+                             'leftover': ('RESTOS INATIVOS · OPCIONAL', MUTED)}[severity]
+            _label(head, badge, fg=colour, bold=True).pack(side='right')
+            if severity == 'installed':
                 _label(card.body, 'Não está rodando agora, mas pode voltar a mudar as cores quando '
-                       'o Windows ou outro app da ASUS o iniciar.', fg=MUTED,
-                       wraplength=500).pack(anchor='w', pady=(6, 0))
+                       'o Windows o iniciar.', fg=MUTED, wraplength=500).pack(anchor='w', pady=(6, 0))
+            if severity == 'leftover':
+                _label(card.body, 'O app e o serviço já foram removidos. Sobraram componentes ocultos '
+                       '(não aparecem em Configurações nem na Loja) que nada mais inicia, então não '
+                       'mudam as cores. Pode deixar como está ou remover para limpar.',
+                       fg=MUTED, wraplength=500).pack(anchor='w', pady=(6, 0))
             if f['running']:
                 _label(card.body, 'Rodando: ' + ', '.join(sorted(set(f['running']))), fg=MUTED,
                        wraplength=500).pack(anchor='w', pady=(6, 0))
@@ -171,8 +179,10 @@ class ConflictsWindow:
                 top.pack(fill='x', pady=(10, 0))
                 _label(top, f'{len(grouped)} componente(s) instalado(s)', fg=TEXT_2,
                        bold=True).pack(side='left')
+                optional = f.get('severity') == 'leftover'
                 _small(top, 'Remover todos', lambda c=every, f=f: self.actions['remove'](c, [f]),
-                       fill=WARN, fg='#2a1c05', width=120).pack(side='right')
+                       fill=SURFACE_3 if optional else WARN, fg=TEXT if optional else '#2a1c05',
+                       width=120).pack(side='right')
             for name, cmds in grouped.items():
                 row = tk.Frame(card.body, bg=SURFACE)
                 row.pack(fill='x', pady=(6, 0))
@@ -183,6 +193,11 @@ class ConflictsWindow:
                 row.pack(fill='x', pady=(6, 0))
                 _label(row, '• ' + pkg.split('_')[0] + ' (Microsoft Store)').pack(side='left')
                 _small(row, 'Abrir', self.actions['settings']).pack(side='right')
+            if severity == 'leftover':
+                _label(card.body, 'Dica: na BIOS, deixe "Download & Install ARMOURY CRATE app" em '
+                       'Disabled para o Windows não reinstalar o Armoury Crate.',
+                       fg=MUTED, wraplength=500).pack(anchor='w', pady=(10, 0))
+                continue
             _label(card.body, 'Como remover', fg=ACCENT, bold=True).pack(anchor='w', pady=(10, 2))
             for i, step in enumerate(f['steps'], 1):
                 _label(card.body, f'{i}. {step}', wraplength=500).pack(anchor='w', pady=1)

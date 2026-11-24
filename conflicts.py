@@ -30,6 +30,8 @@ SOFTWARE = [
          processes=['aac*hal*.exe', 'lightingservice.exe', 'armourycrate*.exe',
                     'armourysocketserver.exe', 'armouryhtmldebugserver.exe', 'auracreator*.exe'],
          installed=r'\baura\b|armoury crate|aura creator', store=['armourycrate'],
+         # Componentes que só rodam quando o Armoury Crate/LightingService os chama.
+         leftovers=r'aura (dram|motherboard|extension card)|\bhal\b',
          steps=['Clique em Parar agora: interrompe o Aura na hora (vale até reiniciar).',
                 'Clique em Remover todos: desinstala os componentes "AURA" listados abaixo. Eles '
                 'ficam ocultos em Configurações → Aplicativos, por isso só dá para remover por aqui.',
@@ -134,15 +136,22 @@ def analyse(procs, service_lookup, installed, store, openrgb_pids, openrgb_servi
         packages = [p for p in store
                     if any(s in p.lower() for s in soft.get('store', []))]
         if running or services or programs or packages:
+            active = bool(running or any(r for _, r in services))
+            rest = soft.get('leftovers')
+            only_leftovers = (not running and not services and not packages and rest and
+                              all(re.search(rest, n, re.I) for n, _ in programs))
             findings.append(dict(
                 key=soft['key'], name=soft['name'], running=running, services=services,
-                installed=programs, store=packages,
-                active=bool(running or any(r for _, r in services)),
+                installed=programs, store=packages, active=active,
+                # active: mexe nos LEDs agora; installed: pode iniciar sozinho;
+                # leftover: só componentes ocultos, sem o app que os chama (inofensivo).
+                severity='active' if active else 'leftover' if only_leftovers else 'installed',
                 steps=soft.get('steps', GENERIC_STEPS), help_url=soft.get('help_url')))
     if len(openrgb_pids) > 1 or (shortcuts and openrgb_service is not None):
         findings.append(dict(
             key='openrgb', name='Segunda cópia do OpenRGB', running=['openrgb.exe'] * len(openrgb_pids),
-            services=[], installed=[], store=[], active=True, shortcuts=list(shortcuts),
+            services=[], installed=[], store=[], active=True, severity='active',
+            shortcuts=list(shortcuts),
             steps=['O OpenRGB já roda como serviço; a cópia extra (atalho na pasta '
                    'Inicializar) disputa os LEDs.', 'Clique em Parar agora: o atalho vai para '
                    'um backup e a cópia extra é fechada.'], help_url=None))
@@ -158,8 +167,14 @@ def find_conflicts():
                    openrgb, service_state(OPENRGB_SERVICE), openrgb_shortcuts())
 
 
+def alerts(findings):
+    """Só o que pode mudar as cores: restos inativos não geram aviso."""
+    return [f for f in findings if f.get('severity') != 'leftover']
+
+
 def summary(findings):
     """Texto curto para o aviso fixo."""
+    findings = alerts(findings)
     if not findings:
         return ''
     names = ', '.join(f['name'] + (' (ativo)' if f['active'] else ' (instalado)') for f in findings)
@@ -218,27 +233,39 @@ def stop_now(findings, folder):
                          f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"')
 
 
-def remove_script(commands, findings=(), backup_dir=''):
+def remove_script(commands, findings=(), backup_dir='', log_path=''):
     """PowerShell que para os programas e roda cada desinstalação, uma por vez."""
     lines = stop_script(findings, backup_dir).splitlines() if findings else [
         "$ErrorActionPreference = 'SilentlyContinue'"]
+    lines.append(f'$log = {_ps_quote(log_path)}' if log_path else '$log = $null')
+    lines.append("if ($log) { Add-Content -Path $log -Value ('--- ' + (Get-Date)) }")
     for cmd in commands:
         if cmd:
-            lines.append('Start-Process -FilePath $env:ComSpec -ArgumentList '
-                         + _ps_quote(f'/c "{cmd}"') + ' -Wait -WindowStyle Hidden')
+            lines.append('$p = Start-Process -FilePath $env:ComSpec -ArgumentList '
+                         + _ps_quote(f'/c "{cmd}"') + ' -Wait -PassThru -WindowStyle Hidden')
+            lines.append('if ($log) { Add-Content -Path $log -Value (' + _ps_quote(cmd)
+                         + " + ' => ' + $p.ExitCode) }")
     return '\r\n'.join(lines) + '\r\n'
+
+
+def removal_order(commands):
+    """MSI primeiro (com IGNOREDEPENDENCIES: os pacotes da ASUS dependem uns dos
+    outros e recusam sair), depois o registro do pacote, que já não tem o que remover."""
+    msi = [c for c in commands if 'msiexec' in c.lower()]
+    rest = [c for c in commands if 'msiexec' not in c.lower()]
+    return msi + rest
 
 
 def remove_programs(commands, folder, findings=()):
     """Desinstala (como administrador) e espera terminar.
     False se a pessoa cancelar o pedido de permissão."""
-    commands = [c for c in commands if c]
+    commands = removal_order([c for c in commands if c])
     if not commands:
         raise RuntimeError('Este programa não informa como desinstalar. Use Configurações → Aplicativos.')
     folder = Path(folder)
     script = folder / 'remover-programas-rgb.ps1'
-    script.write_text(remove_script(commands, findings, folder / 'backup-inicializar'),
-                      encoding='utf-8-sig')
+    script.write_text(remove_script(commands, findings, folder / 'backup-inicializar',
+                                    folder / 'remocao.log'), encoding='utf-8-sig')
     return _run_elevated('powershell.exe',
                          f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"')
 

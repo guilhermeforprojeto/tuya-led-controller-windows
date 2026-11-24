@@ -61,6 +61,27 @@ class ConflictTests(unittest.TestCase):
         self.assertIn('(instalado)', summary(found))
         self.assertIn('remova todo e qualquer', summary(found))
 
+    def test_hidden_aura_components_alone_are_inactive_leftovers(self):
+        from conflicts import alerts
+        found = self.run_analyse(installed=[('AURA DRAM Component', 'x'),
+                                            ('ASUS AURA Motherboard HAL', 'y'),
+                                            ('Kingston AURA DRAM Component', 'z')])
+        self.assertEqual(found[0]['severity'], 'leftover')
+        self.assertEqual(alerts(found), [])
+        self.assertEqual(summary(found), '')
+        # Com o app da Store ou um processo rodando, volta a ser alerta.
+        found = self.run_analyse(installed=[('AURA DRAM Component', 'x')],
+                                 store=['B9ECED6F.ArmouryCrate_6'])
+        self.assertEqual(found[0]['severity'], 'installed')
+        found = self.run_analyse(procs={'aac3572dramhal_x86.exe'},
+                                 installed=[('AURA DRAM Component', 'x')])
+        self.assertEqual(found[0]['severity'], 'active')
+
+    def test_removal_runs_msi_before_bundle(self):
+        from conflicts import removal_order
+        self.assertEqual(removal_order(['"b.exe" /uninstall /quiet', 'MsiExec.exe /X{A} /qb']),
+                         ['MsiExec.exe /X{A} /qb', '"b.exe" /uninstall /quiet'])
+
     def test_other_rgb_software(self):
         found = self.run_analyse(procs={'icue.exe', 'signalrgb.exe'})
         self.assertEqual({f['key'] for f in found}, {'icue', 'signalrgb'})
@@ -85,7 +106,7 @@ class RemovalTests(unittest.TestCase):
     def test_msi_repair_becomes_uninstall(self):
         from winproc import removal_command
         self.assertEqual(removal_command('MsiExec.exe /I{1E00994F-C378-4D13-9703-CA8D67B270B7}'),
-                         'MsiExec.exe /X{1E00994F-C378-4D13-9703-CA8D67B270B7} /qb /norestart')
+                         'MsiExec.exe /X{1E00994F-C378-4D13-9703-CA8D67B270B7} IGNOREDEPENDENCIES=ALL /qb /norestart')
         self.assertEqual(removal_command('"C:\\x\\setup.exe" /uninstall', '"C:\\x\\setup.exe" /uninstall /quiet'),
                          '"C:\\x\\setup.exe" /uninstall /quiet')
         self.assertEqual(removal_command('"C:\\y\\unins000.exe"'), '"C:\\y\\unins000.exe"')

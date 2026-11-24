@@ -104,7 +104,7 @@ def main():
     from PIL import ImageTk
     from icon_art import draw_icon, icon_for
     from conflicts import (find_conflicts, stop_now, remove_programs, open_apps_settings,
-                           summary as conflict_summary)
+                           alerts as conflict_alerts)
     from dialogs import ConflictsWindow, AutomationWindow
     from flyout import TrayFlyout, tray_icon_class
     from colour_picker import ColourPicker
@@ -440,6 +440,7 @@ def main():
 
     # Conflitos: outros programas que trocam as cores da placa e das memórias.
     state['conflicts'] = []
+    state['alerts'] = []
     state['fixing'] = False
 
     state['conflict_win'] = None
@@ -469,24 +470,29 @@ def main():
             pass
 
     def show_conflicts(found):
-        new = [f for f in found if f['key'] not in state['notified']]
+        # Aviso só para o que muda as cores; restos inativos ficam só na janela.
+        serious = conflict_alerts(found)
+        new = [f for f in serious if f['key'] not in state['notified']]
         if new:
-            log('Interferindo nos LEDs: ' + ', '.join(f['name'] for f in found))
+            log('Interferindo nos LEDs: ' + ', '.join(f['name'] for f in serious))
             notify('Programas interferindo nos LEDs',
                    ', '.join(f['name'] for f in new) + '. Abra o Controle LED e clique em Resolver.')
-        state['notified'] = {f['key'] for f in found}
+        if state['alerts'] and not serious:
+            log('Nenhum programa interferindo nos LEDs.')
+        state['notified'] = {f['key'] for f in serious}
         state['conflicts'] = found
-        if len(found) == 1:
-            v.warning_short.set(f"{found[0]['name']} está mudando as cores dos LEDs.")
-        elif found:
-            v.warning_short.set(f'{len(found)} programas estão mudando as cores dos LEDs.')
+        state['alerts'] = serious
+        if len(serious) == 1:
+            v.warning_short.set(f"{serious[0]['name']} está mudando as cores dos LEDs.")
+        elif serious:
+            v.warning_short.set(f'{len(serious)} programas estão mudando as cores dos LEDs.')
         else:
             v.warning_short.set('')
         win = state['conflict_win']
         if win and win.win.winfo_exists():
             win.refresh(found)
         try:
-            icon.title = ('⚠ Programas interferindo · ' if found else '') + 'Controle LED · PC'
+            icon.title = ('⚠ Programas interferindo · ' if serious else '') + 'Controle LED · PC'
             icon.update_menu()
         except Exception:
             pass
@@ -512,8 +518,9 @@ def main():
     def stop_conflicts():
         if state['fixing']:
             return
-        if not state['conflicts']:
-            return set_conflict_status('Nada para parar.')
+        if not any(f['active'] for f in state['conflicts']):
+            return set_conflict_status('Nada rodando para parar: nenhum serviço ou processo de '
+                                       'RGB está ativo agora.')
         state['fixing'] = True
         set_conflict_status('Parando os programas… confirme o pedido de permissão do Windows.')
         found = list(state['conflicts'])
@@ -864,7 +871,7 @@ def main():
                         'Controle LED · PC', menu=pystray.Menu(
         pystray.MenuItem('Abrir controles', lambda *_: results.put(('show', None, None)), default=True),
         pystray.MenuItem('⚠ Programas interferindo nos LEDs…', lambda *_: results.put(('fix', None, None)),
-                         visible=lambda _item: bool(state['conflicts'])),
+                         visible=lambda _item: bool(state['alerts'])),
         pystray.MenuItem(lambda _item: 'Perfil ativo: ' + state['profile_label'], None,
                          enabled=False, visible=lambda _item: bool(state['profile_label'])),
         pystray.Menu.SEPARATOR,

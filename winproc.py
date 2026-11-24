@@ -111,7 +111,9 @@ def removal_command(uninstall, quiet='', key_name=''):
         return quiet
     match = MSI_INSTALL.search(uninstall or '')
     if match:
-        return f'MsiExec.exe /X{match.group(2)} /qb /norestart'
+        # IGNOREDEPENDENCIES: instaladores WiX/Burn travam a remoção se outro
+        # pacote "depende" deste (caso dos componentes AURA da ASUS).
+        return f'MsiExec.exe /X{match.group(2)} IGNOREDEPENDENCIES=ALL /qb /norestart'
     return uninstall or ''
 
 
