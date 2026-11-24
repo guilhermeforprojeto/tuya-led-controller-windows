@@ -6,12 +6,14 @@ placas ASUS B550 e memórias DDR4 RGB (ex.: ADATA XPG Spectrix).
 """
 import copy
 import os
+import re
 import subprocess
 import threading
 import time
 from pathlib import Path
 
 from effects import SPEED_FRACTION, openrgb_modes, uses_colour
+from fx import LEDS_PER_STICK, frame, is_animated
 
 HOST = '127.0.0.1'
 PORT = 6742
@@ -72,8 +74,9 @@ class PcLighting:
         self._wait = wait
         self._launched = 0
         self._client = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # o animador consulta dispositivos dentro de _run
         self._modes = {}
+        self.ram = RamAnimator(self)
 
     def _connect(self):
         if self._client is None:
@@ -180,8 +183,30 @@ class PcLighting:
     def set_rgb(self, rgb, types=None):
         return self.set_effect('static', rgb, types=types)
 
-    def apply_selection(self, sel, types=None):
-        """Aplica uma seleção da tela (cor, branco ou efeito) aos dispositivos."""
+    def apply_selection(self, sel, types=None, sticks=None):
+        """Aplica uma seleção da tela (cor, branco ou efeito) aos dispositivos.
+        Memórias (tipo 1) vão para o animador; sticks = posições 1–4 (None = todos)."""
+        types = self.types if types is None else tuple(types)
+        result = 0
+        if 1 in types:
+            addresses = self.ram.resolve(sticks)
+            if not addresses:
+                raise RuntimeError('OpenRGB não encontrou as memórias. Abra o OpenRGB como administrador.')
+            self.ram.set(sel, addresses)
+            result += len(addresses)
+        rest = tuple(t for t in types if t != 1)
+        if rest:
+            result += self._apply_hardware(sel, rest)
+        return result
+
+    def ram_power(self, on, sticks=None, fallback=None):
+        addresses = self.ram.resolve(sticks)
+        if not addresses:
+            raise RuntimeError('OpenRGB não encontrou as memórias. Abra o OpenRGB como administrador.')
+        self.ram.power(on, addresses, fallback)
+        return len(addresses)
+
+    def _apply_hardware(self, sel, types):
         level = sel.get('brightness', 100)
         if sel.get('mode') == 'white':
             return self.set_rgb(scale(white_rgb(sel.get('temperature', 500)), level), types)
@@ -199,9 +224,21 @@ class PcLighting:
         return self.set_rgb(scale(white_rgb(temperature), brightness), types)
 
     def off(self, types=None):
-        return self.set_rgb((0, 0, 0), types)
+        types = self.types if types is None else tuple(types)
+        result = 0
+        if 1 in types:
+            addresses = self.ram.resolve(None)
+            self.ram.power(False, addresses)
+            # Desligamento do PC: grava já, sem esperar o próximo quadro.
+            self.ram._send(time.time())
+            result += len(addresses)
+        rest = tuple(t for t in types if t != 1)
+        if rest:
+            result += self.set_rgb((0, 0, 0), rest)
+        return result
 
     def close(self):
+        self.ram.stop()
         with self._lock:
             self._disconnect()
 
@@ -210,6 +247,183 @@ class PcLighting:
             return lambda r, g, b: (r, g, b)
         from openrgb.utils import RGBColor
         return RGBColor
+
+
+def stick_address(device):
+    """Endereço do pente no barramento (ex.: '0x70'), estável entre reinícios."""
+    location = getattr(getattr(device, 'metadata', None), 'location', '') or ''
+    match = re.search(r'0x[0-9a-fA-F]+', location)
+    return match.group(0).lower() if match else location or str(getattr(device, 'id', ''))
+
+
+def stick_colours(sticks, ordered, t):
+    """{endereço: [rgb × 5]}: pentes com a mesma seleção (grupo) animam juntos,
+    na ordem de `ordered`. sticks: endereço → {'sel', 'on', 'group'}."""
+    out, groups = {}, {}
+    for a in ordered:
+        st = sticks.get(a)
+        if st is None:
+            continue
+        if not st['on']:
+            out[a] = [(0, 0, 0)] * LEDS_PER_STICK
+        else:
+            groups.setdefault(st['group'], []).append(a)
+    for members in groups.values():
+        rows = frame(sticks[members[0]]['sel'], t, sticks=len(members))
+        for a, row in zip(members, rows):
+            out[a] = row
+    return out
+
+
+class RamAnimator:
+    """Controla cada pente de memória separadamente, em modo Direct.
+
+    Cada pente recebe uma seleção (cor, branco ou efeito) ou fica desligado.
+    Pentes com a mesma seleção formam um grupo, e o efeito do grupo percorre
+    os pentes na ordem escolhida (1 → 4), num relógio único: fica sincronizado.
+    """
+    FPS = 30
+
+    def __init__(self, pc):
+        self.pc = pc
+        self.order = []          # endereços na ordem da pessoa (posição 1, 2, 3, 4)
+        self.sticks = {}         # endereço → {'sel': {...}, 'on': bool, 'group': int}
+        self._group = 0
+        self._flash = {}         # endereço → instante em que termina o "piscar"
+        self._dirty = True
+        self._cond = threading.Condition()
+        self._stop = False
+        self._error_until = 0
+        self._thread = None
+
+    # ---- estado
+    def addresses(self):
+        """Endereços detectados, na ordem escolhida (os novos vão para o fim)."""
+        found = self.pc._run(lambda c: [stick_address(d) for d in self.pc._targets(c, (1,))])
+        return self.order_known(found)
+
+    def resolve(self, positions):
+        """Posições 1–4 → endereços; None = todos."""
+        ordered = self.addresses()
+        if positions is None:
+            return ordered
+        return [ordered[p - 1] for p in sorted(set(positions)) if 0 < p <= len(ordered)]
+
+    def set(self, sel, addresses):
+        with self._cond:
+            self._group += 1
+            for a in addresses:
+                self.sticks[a] = {'sel': dict(sel), 'on': True, 'group': self._group}
+            self._touch()
+
+    def power(self, on, addresses, fallback=None):
+        with self._cond:
+            for a in addresses:
+                st = self.sticks.get(a)
+                if st is None:
+                    if not on or fallback is None:
+                        self.sticks[a] = {'sel': dict(fallback or {}), 'on': on, 'group': 0}
+                        continue
+                    self._group += 1
+                    st = self.sticks[a] = {'sel': dict(fallback), 'on': True, 'group': self._group}
+                st['on'] = on
+            self._touch()
+
+    def identify(self, address, seconds=2.0):
+        with self._cond:
+            self._flash[address] = time.time() + seconds
+            self._touch()
+
+    def snapshot(self):
+        with self._cond:
+            return {a: {'sel': dict(s['sel']), 'on': s['on'], 'group': s['group']}
+                    for a, s in self.sticks.items()}
+
+    def restore(self, data):
+        with self._cond:
+            self.sticks = {a: {'sel': dict(s.get('sel') or {}), 'on': bool(s.get('on', True)),
+                               'group': int(s.get('group', 0))} for a, s in (data or {}).items()}
+            self._group = max([s['group'] for s in self.sticks.values()] + [0])
+            self._touch()
+
+    autostart = True  # testes desligam o laço e chamam _send direto
+
+    def _touch(self):
+        self._dirty = True
+        self._cond.notify_all()
+        if self.autostart and (self._thread is None or not self._thread.is_alive()):
+            self._stop = False
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+
+    def stop(self):
+        with self._cond:
+            self._stop = True
+            self._cond.notify_all()
+
+    # ---- cálculo (puro, testável)
+    def colours(self, t, ordered):
+        """{endereço: [rgb × 5]} para o instante t."""
+        out = stick_colours(self.sticks, ordered, t)
+        for a, until in list(self._flash.items()):
+            if until > t:
+                on = int((until - t) * 6) % 2 == 0
+                out[a] = [(255, 255, 255) if on else (0, 0, 0)] * LEDS_PER_STICK
+            else:
+                del self._flash[a]
+                self._dirty = True  # volta ao estado normal do pente
+        return out
+
+    def _animated(self, now):
+        if any(until > now for until in self._flash.values()):
+            return True
+        return any(s['on'] and is_animated(s['sel']) for s in self.sticks.values())
+
+    # ---- laço
+    def _loop(self):
+        while True:
+            with self._cond:
+                if self._stop:
+                    return
+                now = time.time()
+                if not self._dirty and not self._animated(now):
+                    self._cond.wait(1.0)
+                    continue
+                self._dirty = False
+            if time.time() < self._error_until:
+                time.sleep(0.5)
+                continue
+            try:
+                self._send(time.time())
+            except Exception:
+                self._error_until = time.time() + 3  # OpenRGB fora: tenta de novo depois
+                self._dirty = True
+            time.sleep(1 / self.FPS)
+
+    def _send(self, t):
+        colour_cls = self.pc._colour_class()
+
+        def action(client):
+            devices = {stick_address(d): d for d in self.pc._targets(client, (1,))}
+            ordered = self.order_known(list(devices))
+            with self._cond:
+                frame_colours = self.colours(t, ordered)
+            for a, rgbs in frame_colours.items():
+                d = devices.get(a)
+                if d is None:
+                    continue
+                if self.pc._modes.get(d.id) != 'direct-sw':
+                    direct = pick_mode(d, ['Direct'])
+                    if direct is None:
+                        continue
+                    d.set_mode(direct)
+                    self.pc._modes[d.id] = 'direct-sw'
+                d.set_colors([colour_cls(*(round(c) for c in rgb)) for rgb in rgbs], fast=True)
+        self.pc._run(action)
+
+    def order_known(self, found):
+        known = [a for a in self.order if a in found]
+        return known + sorted(a for a in found if a not in known)
 
 
 def pick_mode(device, names):

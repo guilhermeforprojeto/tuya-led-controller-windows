@@ -5,10 +5,13 @@ o raio de um elemento interno é o raio do externo menos o espaço entre eles.
 Poucas superfícies: seções separadas por espaço e título, só a prévia é card.
 """
 import sys
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import ttk
+from types import SimpleNamespace
 
+from fx import is_animated as fx_animated, rgb_to_hex, single as fx_single
 from palettes import FAVOURITES, name_for
 from shapes import concentric, squircle_points
 
@@ -268,6 +271,78 @@ class ChipGrid(_Canvas):
                              font=(FONT, self.font_size, 'bold' if selected else 'normal'))
 
 
+class StickChips(_Canvas):
+    """Escolha de pentes (vários ao mesmo tempo). variable guarda as posições,
+    ex.: '134'. Nunca fica vazio: o último escolhido não desmarca."""
+    def __init__(self, parent, variable, count, height=32, gap=6):
+        super().__init__(parent, height=height, cursor='hand2', takefocus=True)
+        self.variable, self.count, self.gap = variable, count, gap
+        self._hover = None
+        self.bind('<Configure>', lambda _: self.redraw())
+        self.bind('<Button-1>', self._click)
+        self.bind('<Motion>', lambda e: self._set_hover(self._index_at(e.x)))
+        self.bind('<Leave>', lambda _: self._set_hover(None))
+        for n in range(1, 10):
+            self.bind(str(n), lambda _e, n=n: self.toggle(n))
+        self.watch(variable)
+        self.watch(count)
+
+    def _n(self):
+        return max(1, self.count.get())
+
+    def _cell(self, i):
+        n = self._n() + 1  # +1: "Todos"
+        w = (self.winfo_width() - (n - 1) * self.gap) / n
+        return i * (w + self.gap), i * (w + self.gap) + w
+
+    def _index_at(self, x):
+        for i in range(self._n() + 1):
+            x0, x1 = self._cell(i)
+            if x0 <= x <= x1:
+                return i
+        return None
+
+    def _set_hover(self, i):
+        if i != self._hover:
+            self._hover = i
+            self.redraw()
+
+    def chosen(self):
+        return [int(c) for c in self.variable.get() if c.isdigit() and 0 < int(c) <= self._n()]
+
+    def toggle(self, n):
+        now = set(self.chosen())
+        now ^= {n}
+        if now:
+            self.variable.set(''.join(str(i) for i in sorted(now)))
+
+    def _click(self, event):
+        self.focus_set()
+        i = self._index_at(event.x)
+        if i is None:
+            return
+        if i == self._n():
+            self.variable.set(''.join(str(k) for k in range(1, self._n() + 1)))
+        else:
+            self.toggle(i + 1)
+
+    def redraw(self):
+        self.delete('all')
+        h = self.winfo_height()
+        chosen = set(self.chosen())
+        every = len(chosen) == self._n()
+        for i in range(self._n() + 1):
+            x0, x1 = self._cell(i)
+            on = every if i == self._n() else (i + 1) in chosen
+            base = mix(self.cget('bg'), SURFACE_2, 0.75)
+            fill = (mix(self.cget('bg'), ACCENT, 0.24) if on else
+                    mix(base, '#ffffff', 0.06) if i == self._hover else base)
+            self.shape(x0, 0, x1, h - 1, FREE_R, fill=fill)
+            self.create_text((x0 + x1) / 2, h / 2, text='Todos' if i == self._n() else str(i + 1),
+                             fill=ACCENT_SOFT if on else TEXT_2,
+                             font=(FONT, 10, 'bold' if on else 'normal'))
+
+
 class Swatches(_Canvas):
     """Paleta em círculos; o anel marca a cor atual. O último abre o seletor."""
     SIZE, GAP = 28, 10
@@ -459,9 +534,12 @@ def warning_banner(parent, variable, on_click, wraplength=300):
     return banner
 
 
-def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix_conflicts):
+def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix_conflicts,
+                ram=None):
     """v: namespace com as variáveis Tk (target, mode, colour, brightness,
-    temperature, effect, speed, pc_sync, power, status, warning_short)."""
+    temperature, effect, speed, pc_sync, power, status, warning_short, sticks,
+    stick_count). ram: preview(t, sel, posições) → [[rgb×5] por pente] e
+    open_order() para escolher a ordem dos pentes."""
     labels = dict(TARGETS)
     effect_info = {key: (name, colour) for key, name, colour, _ in effects}
     frame.configure(style='TFrame')
@@ -486,6 +564,21 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
 
     targets = Segmented(shell, v.target, TARGETS)
     targets.pack(fill='x', pady=(18, 10))
+
+    # Aba Memórias: quais pentes (1–4) recebem o comando.
+    stick_box = tk.Frame(shell, bg=BG)
+    stick_head = tk.Frame(stick_box, bg=BG)
+    stick_head.pack(fill='x', pady=(0, 6))
+    tk.Label(stick_head, text='Pentes', bg=BG, fg=TEXT_2, font=(FONT, 10, 'bold')).pack(side='left')
+    order_link = tk.Label(stick_head, text='Ordem e identificação', bg=BG, fg=ACCENT,
+                          cursor='hand2', font=(FONT, 9))
+    order_link.pack(side='right')
+    order_link.bind('<Button-1>', lambda _: ram and ram.open_order())
+    order_link.bind('<Enter>', lambda _: order_link.configure(fg=ACCENT_SOFT))
+    order_link.bind('<Leave>', lambda _: order_link.configure(fg=ACCENT))
+    StickChips(stick_box, v.sticks, v.stick_count).pack(fill='x')
+    stick_hint = tk.Label(stick_box, bg=BG, fg=MUTED, font=(FONT, 8), anchor='w')
+    stick_hint.pack(fill='x', pady=(4, 10))
 
     power_row = tk.Frame(shell, bg=BG)
     power_row.pack(fill='x')
@@ -542,24 +635,57 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
     for sequence in ('<Button-1>', '<Return>', '<space>'):
         brand.bind(sequence, lambda _: webbrowser.open('https://systembee.com.br/'))
 
+    def current_sel():
+        return {k: getattr(v, k).get() for k in
+                ('mode', 'colour', 'brightness', 'temperature', 'effect', 'speed')}
+
+    def sticks_mode():
+        return v.target.get() == 'ram' and ram is not None
+
+    def led_area():
+        return 52 + 22 + 30 if not sticks_mode() else 20 + v.stick_count.get() * 20 + 24
+
+    def draw_led(t=None):
+        """Parte animada da prévia: o LED (ou os pentes), no relógio do efeito."""
+        t = time.time() if t is None else t
+        preview.delete('led')
+        h = preview.winfo_height()
+        sel = current_sel()
+        if sticks_mode():
+            positions = [int(c) for c in v.sticks.get() if c.isdigit()]
+            rows = ram.preview(t, sel, positions) or []
+            x = 20
+            for i, row in enumerate(rows):
+                chosen = (i + 1) in positions
+                top, bottom = 14, h - 24
+                preview.shape(x, top, x + 14, bottom, 4, fill=SURFACE_3 if chosen else SURFACE_2,
+                              outline=ACCENT if chosen else '', width=1, tags='led')
+                step = (bottom - top - 8) / max(1, len(row))
+                for k, rgb in enumerate(reversed(row)):  # LED 1 embaixo, como no pente
+                    y = top + 4 + k * step + step / 2
+                    c = rgb_to_hex(rgb)
+                    preview.create_oval(x + 3, y - 4, x + 11, y + 4, fill=c, outline='', tags='led')
+                preview.create_text(x + 7, h - 12, text=str(i + 1), tags='led',
+                                    fill=ACCENT_SOFT if chosen else MUTED,
+                                    font=(FONT, 8, 'bold' if chosen else 'normal'))
+                x += 20
+            return
+        colour = rgb_to_hex(fx_single(sel, t))
+        glow = mix(SURFACE, colour, 1.0)
+        cx, cy, r = 52, h / 2, 22
+        for i in range(6, 0, -1):  # halo
+            rr = r + i * 3
+            preview.create_oval(cx - rr, cy - rr, cx + rr, cy + rr, outline='', tags='led',
+                                fill=mix(SURFACE, glow, 0.03 + (6 - i) * 0.05))
+        preview.create_oval(cx - r, cy - r, cx + r, cy + r, fill=colour, outline='', tags='led')
+
     def draw_preview(where, mode, colour, effect_name, effect_colour):
         preview.delete('all')
         w, h = preview.winfo_width(), preview.winfo_height()
         preview.shape(0, 0, w - 1, h - 1, CARD_R, fill=SURFACE)
-        cx, cy, r = 52, h / 2, 22
+        cy = h / 2
         rainbow = mode == 'effect' and not effect_colour
-        glow = mix(RAINBOW[0], RAINBOW[4], 0.5) if rainbow else colour
-        for i in range(6, 0, -1):  # halo
-            rr = r + i * 3
-            preview.create_oval(cx - rr, cy - rr, cx + rr, cy + rr, outline='',
-                                fill=mix(SURFACE, glow, 0.03 + (6 - i) * 0.05))
-        if rainbow:
-            step = 360 / len(RAINBOW)
-            for i, c in enumerate(RAINBOW):
-                preview.create_arc(cx - r, cy - r, cx + r, cy + r, start=90 - (i + 1) * step,
-                                   extent=step, fill=c, outline=c, style='pieslice')
-        else:
-            preview.create_oval(cx - r, cy - r, cx + r, cy + r, fill=colour, outline='')
+        draw_led()
         name = name_for(colour)
         if mode == 'white':
             title, detail = 'Branco', 'Ajuste a temperatura abaixo'
@@ -569,7 +695,11 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
         else:
             title = name or colour.upper()
             detail = colour.upper() + ' · clique para mais cores' if name else 'Clique para mais cores'
-        x = cx + r + 30
+        if sticks_mode():
+            n = len([c for c in v.sticks.get() if c.isdigit()])
+            detail = ('Todos os pentes' if n == v.stick_count.get() else
+                      f"Pente{'s' if n > 1 else ''} {', '.join(c for c in v.sticks.get())}") + ' · ' + detail
+        x = led_area()
         preview.create_text(x, cy - 10, anchor='w', text=title, fill=TEXT, font=(DISPLAY, 15, 'bold'))
         preview.create_text(x, cy + 14, anchor='w', fill=MUTED, font=(FONT, 9), text=detail)
 
@@ -591,6 +721,11 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
             white_tools.pack(fill='x')
         elif mode == 'colour' or effect_colour:
             colour_tools.pack(fill='x')
+        if sticks_mode():
+            stick_box.pack(fill='x', after=targets)
+            stick_hint.configure(text='Escolha um ou mais pentes; os outros ficam como estão.')
+        else:
+            stick_box.pack_forget()
         action.set_text(f'Aplicar em {where}')
         colour = white_preview(v.temperature.get()) if mode == 'white' else v.colour.get()
         draw_preview(where, mode, colour, effect_name, effect_colour)
@@ -601,7 +736,8 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
         else:
             banner.pack_forget()
 
-    for variable in (v.target, v.mode, v.colour, v.brightness, v.temperature, v.effect, v.pc_sync):
+    for variable in (v.target, v.mode, v.colour, v.brightness, v.temperature, v.effect, v.pc_sync,
+                     v.speed, v.sticks, v.stick_count):
         variable.trace_add('write', update)
     v.warning_short.trace_add('write', update_warning)
     update()
@@ -610,7 +746,13 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
     def set_icon(photo):
         icon_label.configure(image=photo)
         icon_label.image = photo
-    return set_icon
+
+    def tick(t):
+        """Chamado pelo relógio de animação; só redesenha o que se move."""
+        if sticks_mode() or fx_animated(current_sel()):
+            draw_led(t)
+
+    return SimpleNamespace(set_icon=set_icon, tick=tick, redraw=update)
 
 
 def build_menu(root, settings, refresh, minimize, quit_app, extras=()):

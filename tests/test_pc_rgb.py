@@ -13,11 +13,13 @@ def mode(id, name, colour_mode, speed=None, colors_max=None):
                            colors_max=colors_max, colors=None)
 
 
-def device(id, type, name, specific=False):
+def device(id, type, name, specific=False, address=None):
     kind = 'MODE_SPECIFIC' if specific else 'PER_LED'
     modes = [mode(0, 'Direct', 'PER_LED'), mode(1, 'Breathing', kind, 2, 1 if specific else None),
              mode(2, 'Rainbow', 'NONE', 2)]
-    d = SimpleNamespace(id=id, type=type, name=name, modes=modes, active_mode=0, set_color=Mock())
+    location = f'I2C: SMBus 0, address {address}' if address else 'HID: x'
+    d = SimpleNamespace(id=id, type=type, name=name, modes=modes, active_mode=0, set_color=Mock(),
+                        set_colors=Mock(), metadata=SimpleNamespace(location=location))
     def set_mode(m):
         d.active_mode = m.id
     d.set_mode = Mock(side_effect=set_mode)
@@ -26,11 +28,16 @@ def device(id, type, name, specific=False):
 
 class PcRgbTests(unittest.TestCase):
     def setUp(self):
-        self.devs = [device(0, 0, 'ASUS TUF B550M-PLUS', specific=True), device(1, 1, 'XPG Spectrix'),
-                     device(2, 2, 'GPU')]
+        self.devs = [device(0, 0, 'ASUS TUF B550M-PLUS', specific=True),
+                     device(1, 1, 'ENE DRAM', address='0x71'), device(2, 2, 'GPU'),
+                     device(3, 1, 'ENE DRAM', address='0x70')]
         self.client = SimpleNamespace(devices=self.devs, disconnect=Mock())
         self.factory = Mock(return_value=self.client)
         self.pc = PcLighting(client_factory=self.factory)
+        self.pc.ram.autostart = False
+
+    def last_colours(self, dev):
+        return dev.set_colors.call_args.args[0]
 
     def test_colour_math(self):
         self.assertEqual(hex_to_rgb('#ff8000'), (255, 128, 0))
@@ -39,46 +46,58 @@ class PcRgbTests(unittest.TestCase):
         self.assertEqual(white_rgb(1000), (205, 228, 255))
 
     def test_only_motherboard_and_ram(self):
-        self.assertEqual(self.pc.devices(), ['ASUS TUF B550M-PLUS', 'XPG Spectrix'])
-        self.assertEqual(self.pc.apply('#ff0000', 100), 2)
+        self.assertEqual(self.pc.devices(), ['ASUS TUF B550M-PLUS', 'ENE DRAM', 'ENE DRAM'])
+        self.pc.apply('#ff0000', 100, types=(0,))
         self.devs[2].set_color.assert_not_called()
         self.devs[0].set_color.assert_called_once_with((255, 0, 0), fast=True)
 
-    def test_direct_mode_once_and_off(self):
-        self.devs[1].active_mode = 1
-        self.pc.apply('#00ff00', 100)
-        self.pc.off()
-        self.devs[1].set_mode.assert_called_once()  # só na primeira vez
-        self.assertEqual(self.devs[1].set_color.call_args.args[0], (0, 0, 0))
+    def test_board_direct_mode_once_and_off(self):
+        self.devs[0].active_mode = 1
+        self.pc.apply('#00ff00', 100, types=(0,))
+        self.pc.off((0,))
+        self.devs[0].set_mode.assert_called_once()  # só na primeira vez
+        self.assertEqual(self.devs[0].set_color.call_args.args[0], (0, 0, 0))
         self.factory.assert_called_once()
 
-    def test_individual_device(self):
-        self.pc.apply('#ff0000', 100, types=(1,))
-        self.devs[0].set_color.assert_not_called()
-        self.devs[0].set_mode.assert_not_called()
-        self.devs[1].set_color.assert_called_once()
-
-    def test_effect_colour_and_speed(self):
+    def test_board_effect_colour_and_speed(self):
         self.pc.apply_selection({'mode': 'effect', 'effect': 'breathing', 'colour': '#ff0000',
-                                 'brightness': 100, 'speed': 'fast'})
+                                 'brightness': 100, 'speed': 'fast'}, (0,))
         board_mode = self.devs[0].set_mode.call_args.args[0]
         self.assertEqual((board_mode.name, board_mode.colors, board_mode.speed), ('Breathing', [(255, 0, 0)], 0))
         self.devs[0].set_color.assert_not_called()  # cor vai no próprio modo
-        self.assertEqual(self.devs[1].set_mode.call_args.args[0].speed, 0)
-        self.devs[1].set_color.assert_called_once_with((255, 0, 0), fast=True)
 
-    def test_effect_without_colour_and_fallback(self):
-        self.pc.apply_selection({'mode': 'effect', 'effect': 'rainbow', 'colour': '#ff0000',
-                                 'speed': 'slow'})
-        self.assertEqual(self.devs[1].set_mode.call_args.args[0].speed, 4)
-        self.devs[1].set_color.assert_not_called()
-        self.pc.apply_selection({'mode': 'effect', 'effect': 'chase', 'colour': '#00ff00'})
-        self.assertEqual(self.devs[1].set_mode.call_args.args[0].name, 'Direct')
+    def test_ram_sticks_in_address_order_and_direct(self):
+        self.assertEqual(self.pc.ram.addresses(), ['0x70', '0x71'])
+        self.pc.apply_selection({'mode': 'colour', 'colour': '#ff0000', 'brightness': 100}, (1,))
+        self.pc.ram._send(0)
+        for d in (self.devs[1], self.devs[3]):
+            self.assertEqual(d.set_mode.call_args.args[0].name, 'Direct')
+            self.assertEqual(self.last_colours(d), [(255, 0, 0)] * 5)
+        self.devs[0].set_mode.assert_not_called()
+
+    def test_only_selected_sticks_change(self):
+        red = {'mode': 'colour', 'colour': '#ff0000', 'brightness': 100}
+        blue = {'mode': 'colour', 'colour': '#0000ff', 'brightness': 100}
+        self.pc.apply_selection(red, (1,))
+        self.pc.apply_selection(blue, (1,), sticks=[2])   # posição 2 = 0x71
+        self.pc.ram._send(0)
+        self.assertEqual(self.last_colours(self.devs[3])[0], (255, 0, 0))
+        self.assertEqual(self.last_colours(self.devs[1])[0], (0, 0, 255))
+        self.pc.ram_power(False, [1])
+        self.pc.ram._send(0)
+        self.assertEqual(self.last_colours(self.devs[3]), [(0, 0, 0)] * 5)
+        self.pc.ram_power(True, [1])
+        self.pc.ram._send(0)
+        self.assertEqual(self.last_colours(self.devs[3])[0], (255, 0, 0))
+
+    def test_custom_order(self):
+        self.pc.ram.order = ['0x71', '0x70']
+        self.assertEqual(self.pc.ram.resolve([1]), ['0x71'])
 
     def test_white_selection(self):
-        self.pc.apply_selection({'mode': 'white', 'temperature': 0, 'brightness': 100})
-        self.devs[1].set_color.assert_called_once_with((255, 186, 107), fast=True)
-
+        self.pc.apply_selection({'mode': 'white', 'temperature': 0, 'brightness': 100}, (1,))
+        self.pc.ram._send(0)
+        self.assertEqual(self.last_colours(self.devs[3])[0], (255, 186, 107))
     def test_reconnects_once_after_failure(self):
         self.devs[0].set_color.side_effect = [ConnectionResetError(), None]
         self.pc.apply('#0000ff', 100)
@@ -100,7 +119,7 @@ class PcRgbTests(unittest.TestCase):
         launcher = Mock()
         with patch('pc_rgb.time.sleep'):
             pc = PcLighting(client_factory=factory, launcher=launcher, wait=5)
-            self.assertEqual(pc.apply('#ffffff', 100), 2)
+            self.assertEqual(pc.apply('#ffffff', 100, types=(0,)), 1)
         launcher.assert_called_once()
 
     def test_launch_not_repeated(self):

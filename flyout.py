@@ -240,6 +240,13 @@ class TrayFlyout:
         else:
             self.banner.pack_forget()
 
+    def refresh_icon(self):
+        """Só o ícone do cabeçalho (acompanha o efeito animado)."""
+        if self.win is not None:
+            photo = self.ctx.icon_image(36)
+            self.icon_label.configure(image=photo)
+            self.icon_label.image = photo
+
     def refresh(self):
         """Atualiza o painel aberto (ex.: depois de aplicar)."""
         if self.visible:

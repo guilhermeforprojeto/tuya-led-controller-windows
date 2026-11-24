@@ -1,4 +1,5 @@
 """Janelas secundárias: programas que interferem e rotinas/perfis."""
+import threading
 import time
 import tkinter as tk
 import webbrowser
@@ -95,6 +96,84 @@ def _window(root, title, size):
     win.minsize(520, 420)
     win.transient(root)
     return win
+
+
+class StickOrderWindow:
+    """Ordem dos pentes: "Piscar" mostra qual pente físico é qual, e as setas
+    trocam a posição. A ordem define o sentido dos efeitos (1 → 4)."""
+
+    def __init__(self, root, pc, on_save):
+        self.pc, self.on_save = pc, on_save
+        self.win = _window(root, 'Ordem dos pentes', '460x460')
+        self.win.minsize(420, 360)
+        box = tk.Frame(self.win, bg=BG, padx=20, pady=18)
+        box.pack(fill='both', expand=True)
+        _label(box, 'Ordem dos pentes', size=15, bold=True).pack(anchor='w')
+        _label(box, 'Clique em Piscar para ver qual pente acende, e use as setas até a '
+               'posição 1 ser o pente da esquerda (ou o mais perto do processador). Os '
+               'efeitos andam do 1 para o último.', fg=MUTED, wraplength=410).pack(anchor='w', pady=(4, 12))
+        self.rows = tk.Frame(box, bg=BG)
+        self.rows.pack(fill='x')
+        self.msg = tk.StringVar(value='Procurando os pentes…')
+        _label(box, textvariable=self.msg, fg=MUTED).pack(anchor='w', pady=(10, 0))
+        buttons = tk.Frame(box, bg=BG)
+        buttons.pack(fill='x', side='bottom', pady=(14, 0))
+        PillButton(buttons, 'Cancelar', self.win.destroy, height=40).pack(
+            side='left', expand=True, fill='x', padx=(0, 4))
+        PillButton(buttons, 'Salvar ordem', self.save, height=40, fill=ACCENT,
+                   hover=ACCENT_HOVER, fg=ACCENT_TEXT).pack(side='left', expand=True, fill='x', padx=(4, 0))
+        self.order = []
+        self.win.after(50, self._load)
+
+    def _load(self):
+        result = {}
+
+        def run():
+            try:
+                result['order'] = self.pc.ram.addresses()
+            except Exception as exc:
+                result['error'] = str(exc)
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+
+        def wait():
+            if thread.is_alive():
+                self.win.after(100, wait)
+            elif 'error' in result:
+                self.msg.set(result['error'])
+            else:
+                self.order = result['order']
+                self.msg.set(f'{len(self.order)} pentes encontrados.' if self.order else
+                             'Nenhum pente encontrado. Abra o OpenRGB como administrador.')
+                self.render()
+        wait()
+
+    def render(self):
+        for child in self.rows.winfo_children():
+            child.destroy()
+        for i, address in enumerate(self.order):
+            card = RoundBox(self.rows, pad=10, radius=14)
+            card.pack(fill='x', pady=(0, 6))
+            row = card.body
+            _label(row, str(i + 1), size=14, bold=True, fg=ACCENT_SOFT).pack(side='left', padx=(4, 12))
+            texts = tk.Frame(row, bg=SURFACE)
+            texts.pack(side='left', fill='x', expand=True)
+            _label(texts, f'Posição {i + 1}', bold=True, size=10).pack(anchor='w')
+            _label(texts, f'Endereço {address}', fg=MUTED, size=8).pack(anchor='w')
+            _small(row, '↓', lambda i=i: self.move(i, 1), width=34).pack(side='right')
+            _small(row, '↑', lambda i=i: self.move(i, -1), width=34).pack(side='right', padx=(6, 6))
+            _small(row, 'Piscar', lambda a=address: self.pc.ram.identify(a), width=70).pack(side='right')
+
+    def move(self, i, step):
+        j = i + step
+        if 0 <= j < len(self.order):
+            self.order[i], self.order[j] = self.order[j], self.order[i]
+            self.render()
+
+    def save(self):
+        if self.order:
+            self.on_save(self.order)
+        self.win.destroy()
 
 
 class ConflictsWindow:

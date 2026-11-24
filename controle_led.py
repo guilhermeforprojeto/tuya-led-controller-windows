@@ -107,6 +107,9 @@ def main():
                            alerts as conflict_alerts)
     from dialogs import ConflictsWindow, AutomationWindow
     from flyout import TrayFlyout, tray_icon_class
+    from dialogs import StickOrderWindow
+    from fx import is_animated, rgb_to_hex, single as fx_single
+    from pc_rgb import stick_colours
     from colour_picker import ColourPicker
     from palettes import remember as remember_colour
     from automation import due_routines, pick_profile, ProfileSwitcher
@@ -185,6 +188,8 @@ def main():
                   for key in ('all', 'strip', 'board', 'ram')}
     state = {'api': Tuya(config), 'pc': PcLighting(launcher=openrgb_launcher), 'busy': False,
              'loading': False}
+    # Memórias: ordem dos pentes e o estado de cada um (cor/efeito ou desligado).
+    state['pc'].ram.order = list(config.get('ram_order') or [])
     ready = tuya_ready() or config.get('pc_sync')
     v = SimpleNamespace(
         target=tk.StringVar(value='all'),
@@ -193,6 +198,8 @@ def main():
         pc_sync=tk.BooleanVar(value=config.get('pc_sync', False)),
         power=tk.StringVar(value='Fita: estado não consultado'),
         warning_short=tk.StringVar(value=''),
+        sticks=tk.StringVar(value=config.get('ram_selected') or '1234'),
+        stick_count=tk.IntVar(value=int(config.get('ram_count') or 4)),
         status=tk.StringVar(value='Escolha a aba, a cor ou o efeito e clique em Aplicar.' if ready
                             else 'Configure as credenciais para começar.'))
     status, power = v.status, v.power
@@ -259,7 +266,10 @@ def main():
         return [command('switch_led', True), command('work_mode', 'colour'),
                 command('colour_data_v2', colour_value(sel['colour'], sel['brightness']))]
 
-    def make_job(parts, sel_for, power_on=None):
+    def stick_positions():
+        return [int(c) for c in v.sticks.get() if c.isdigit()] or None
+
+    def make_job(parts, sel_for, power_on=None, sticks_only=False):
         """Monta o trabalho do worker. sel_for(part) devolve a seleção da parte.
         Os dados são copiados aqui, na thread da interface."""
         steps = []
@@ -267,14 +277,22 @@ def main():
             cmds = ([command('switch_led', power_on)] if power_on is not None
                     else tuya_commands(sel_for('strip')))
             steps.append(('fita', lambda c=cmds: state['api'].send(c)))
-        for part in ('board', 'ram'):
-            if part in parts:
-                types = (PC_TYPES[part],)
-                if power_on is False:
-                    steps.append((NAMES[part], lambda t=types: state['pc'].off(t)))
-                else:
-                    sel = dict(sel_for(part))
-                    steps.append((NAMES[part], lambda t=types, s=sel: state['pc'].apply_selection(s, t)))
+        if 'board' in parts:
+            if power_on is False:
+                steps.append((NAMES['board'], lambda: state['pc'].off((0,))))
+            else:
+                sel = dict(sel_for('board'))
+                steps.append((NAMES['board'], lambda s=sel: state['pc'].apply_selection(s, (0,))))
+        if 'ram' in parts:
+            # Na aba Memórias, só os pentes escolhidos; nas outras, todos.
+            positions = stick_positions() if sticks_only else None
+            sel = dict(sel_for('ram'))
+            if power_on is None:
+                steps.append((NAMES['ram'], lambda s=sel, p=positions:
+                              state['pc'].apply_selection(s, (1,), p)))
+            else:
+                steps.append((NAMES['ram'], lambda on=power_on, s=sel, p=positions:
+                              state['pc'].ram_power(on, p, fallback=s)))
 
         def job():
             done, errors = [], []
@@ -296,8 +314,19 @@ def main():
             text += ' Aviso: ' + ' '.join(errors)
             log(text)
         status.set(text)
+        if 'memórias' in done:
+            save_ram_state()
         if any(name != 'fita' for name in done):
             check_conflicts()
+
+    def save_ram_state():
+        """Guarda o estado de cada pente para restaurar ao abrir o app."""
+        config['ram_sticks'] = state['pc'].ram.snapshot()
+        config['ram_selected'] = v.sticks.get()
+        try:
+            save_config(config)
+        except OSError:
+            pass
 
     def poll():
         try:
@@ -387,8 +416,8 @@ def main():
             if 'strip' in parts:
                 power.set('Fita: ligada' if value else 'Fita: desligada')
             report(result)
-        # Ligar no PC restaura a seleção salva de cada parte.
-        submit(make_job(parts, lambda part: selections[part], value), done)
+        # Ligar no PC restaura a seleção salva de cada parte (e de cada pente).
+        submit(make_job(parts, lambda part: selections[part], value, sticks_only=target == 'ram'), done)
 
     def remember():
         config['selections'] = selections
@@ -414,7 +443,7 @@ def main():
             if 'strip' in parts:
                 power.set('Fita: ligada')
             report(result)
-        submit(make_job(parts, lambda part: sel), done)
+        submit(make_job(parts, lambda part: sel, sticks_only=target == 'ram'), done)
 
     def quick_apply(changes):
         """Atalho da bandeja: aplica a mudança em tudo (aba Geral)."""
@@ -780,8 +809,41 @@ def main():
             settings()
     v.pc_sync.trace_add('write', pc_sync_changed)
 
-    set_header_icon = build_panel(frame, v, pick, apply, set_power, EFFECTS, SPEEDS,
-                                  lambda: results.put(('fix', None, None)))
+    def ram_preview(t, sel, positions):
+        """Prévia dos pentes: os escolhidos com a seleção da tela, os outros como estão."""
+        count = v.stick_count.get()
+        names = [f'p{i}' for i in range(1, count + 1)]
+        saved = state['pc'].ram.snapshot()
+        order = state['pc'].ram.order_known(list(saved)) if saved else []
+        sticks = {}
+        for i, name in enumerate(names):
+            address = order[i] if i < len(order) else None
+            st = saved.get(address) if address else None
+            sticks[name] = st or {'sel': dict(selections['ram']), 'on': True, 'group': -1}
+        for p in positions:
+            if 0 < p <= count:
+                sticks[names[p - 1]] = {'sel': dict(sel), 'on': True, 'group': -2}
+        colours = stick_colours(sticks, names, t)
+        return [colours.get(n, [(0, 0, 0)] * 5) for n in names]
+
+    def open_stick_order():
+        show()
+        StickOrderWindow(root, state['pc'], on_order_saved)
+
+    def on_order_saved(order):
+        config['ram_order'] = list(order)
+        config['ram_count'] = len(order)
+        v.stick_count.set(len(order))
+        state['pc'].ram.order = list(order)
+        try:
+            save_config(config)
+        except OSError:
+            pass
+
+    panel = build_panel(frame, v, pick, apply, set_power, EFFECTS, SPEEDS,
+                        lambda: results.put(('fix', None, None)),
+                        SimpleNamespace(preview=ram_preview, open_order=open_stick_order))
+    set_header_icon = panel.set_icon
 
     def show():
         root.deiconify()
@@ -799,20 +861,47 @@ def main():
                [('Rotinas e perfis por jogo/app…', open_automation),
                 ('Programas que interferem nos LEDs…', open_conflicts)])
 
-    def paint_window_icon(sel):
-        art = icon_for(sel)
+    def live_art(sel, t=None):
+        """Desenho do ícone no instante t: mesma cor que o efeito mostra agora."""
+        if is_animated(sel):
+            return dict(colour=rgb_to_hex(fx_single(sel, time.time() if t is None else t)))
+        return icon_for(sel)
+
+    def paint_window_icon(sel, t=None):
+        art = live_art(sel, t)
         window_icon = ImageTk.PhotoImage(draw_icon(size=64, **art))
         root.iconphoto(True, window_icon)
         set_header_icon(ImageTk.PhotoImage(draw_icon(size=44, **art)))
         state['window_icon'] = window_icon
 
-    def paint_icon(sel):
-        paint_window_icon(sel)
+    def paint_icon(sel, t=None, menu=True):
+        paint_window_icon(sel, t)
         try:
-            icon.icon = draw_icon(size=64, **icon_for(sel))
-            icon.update_menu()  # no Windows o menu não se refaz sozinho
+            icon.icon = draw_icon(size=64, **live_art(sel, t))
+            if menu:
+                icon.update_menu()  # no Windows o menu não se refaz sozinho
         except Exception:
             pass
+
+    def animation_tick():
+        """Relógio único: prévia (30 fps) e ícones (8 fps) seguem o mesmo efeito
+        e o mesmo instante que as memórias."""
+        t = time.time()
+        try:
+            if root.state() == 'normal':
+                panel.tick(t)
+            state['icon_frame'] = state.get('icon_frame', 0) + 1
+            sel = selections['all']
+            if is_animated(sel) and state['icon_frame'] % 4 == 0:
+                paint_icon(sel, t, menu=False)
+                if state['flyout'].visible:
+                    state['flyout'].refresh_icon()
+            elif not is_animated(sel) and state.get('icon_was_animated'):
+                paint_icon(sel)  # efeito parou: volta ao desenho fixo
+            state['icon_was_animated'] = is_animated(sel)
+        except Exception as exc:
+            log('Animação: ' + str(exc))
+        root.after(33, animation_tick)
 
     from effects import QUICK_COLOURS, QUICK_BRIGHTNESS
 
@@ -863,7 +952,7 @@ def main():
         quit=quit_app, warning=v.warning_short, status=status,
         subtitle=lambda: power.get() + (' · Perfil: ' + state['profile_label']
                                         if state['profile_label'] else ''),
-        icon_image=lambda size: ImageTk.PhotoImage(draw_icon(size=size, **icon_for(selections['all'])))))
+        icon_image=lambda size: ImageTk.PhotoImage(draw_icon(size=size, **live_art(selections['all'])))))
     state['flyout'] = flyout
     IconClass = (tray_icon_class(lambda: results.put(('flyout', None, None)))
                  if os.name == 'nt' else pystray.Icon)
@@ -897,6 +986,10 @@ def main():
     root.after(1500, periodic_check)
     root.after(4000, automation_tick)
     root.after(2500, flyout.prepare)
+    root.after(500, animation_tick)
+    if config.get('pc_sync') and config.get('ram_sticks'):
+        # Efeitos das memórias são animados pelo app: retoma o estado salvo de cada pente.
+        root.after(2000, lambda: state['pc'].ram.restore(config['ram_sticks']))
     if not ready:
         root.after(200, settings)
     if startup_launch and ready:
