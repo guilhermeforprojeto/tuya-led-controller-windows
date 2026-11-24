@@ -648,6 +648,8 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
     colour_tools = tk.Frame(tools, bg=BG)
     section(colour_tools, 'Cor')
     Swatches(colour_tools, v.colour, PALETTE, pick).pack(fill='x')
+    white_amount = section(colour_tools, 'Branco na cor', '')
+    Slider(colour_tools, v.white, 0, 100, gradient=('#ff2d55', '#ffe3e8'), step=5).pack(fill='x')
 
     white_tools = tk.Frame(tools, bg=BG)
     temperature_label = section(white_tools, 'Temperatura', '')
@@ -678,7 +680,7 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
 
     def current_sel():
         return {k: getattr(v, k).get() for k in
-                ('mode', 'colour', 'brightness', 'temperature', 'effect', 'speed')}
+                ('mode', 'colour', 'brightness', 'temperature', 'effect', 'speed', 'white')}
 
     def sticks_mode():
         return v.target.get() == 'ram' and ram is not None
@@ -752,6 +754,7 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
         mode = v.mode.get()
         where = labels.get(v.target.get(), 'Geral')
         percent.configure(text=f'{v.brightness.get()}%')
+        white_amount.configure(text='0% · cor pura' if not v.white.get() else f'{v.white.get()}%')
         temperature_label.configure(text=f'{round(v.temperature.get()/10)}% frio')
         effect_name, effect_colour = effect_info.get(v.effect.get(), ('Estático', True))
         for part in (effect_tools, colour_tools, white_tools):
@@ -779,7 +782,7 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
             banner.pack_forget()
 
     for variable in (v.target, v.mode, v.colour, v.brightness, v.temperature, v.effect, v.pc_sync,
-                     v.speed, v.sticks, v.stick_count):
+                     v.speed, v.sticks, v.stick_count, v.white):
         variable.trace_add('write', update)
     v.warning_short.trace_add('write', update_warning)
     update()

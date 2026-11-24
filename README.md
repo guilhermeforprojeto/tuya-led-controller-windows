@@ -187,3 +187,13 @@ estão. Embaixo de cada pente há **Desligar/Ligar**, e **Apagar outros** apaga 
   barra de tarefas e o painel da bandeja mostram o mesmo efeito, no mesmo ritmo.
 - O app precisa ficar aberto (pode ser só na bandeja) para os efeitos animados das
   memórias continuarem. O estado de cada pente é salvo e volta ao abrir o app.
+
+## Cores puras e "Branco na cor"
+
+O LED não funciona como o monitor: um canal em 10% quase não aparece na tela, mas no
+LED acende 10% de verdade e mistura branco na cor (o vermelho fica "opaco"). Por isso o
+app corrige cada cor antes de enviar (fita, placa-mãe e memórias): a cor chega pura e o
+brilho não muda. O modo **Branco** não passa por essa correção.
+
+Para clarear de propósito, use **Branco na cor** (abaixo das cores): 0% é a cor pura e
+quanto mais alto, mais branca. Vale também para os efeitos.

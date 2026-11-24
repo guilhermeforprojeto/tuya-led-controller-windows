@@ -28,7 +28,7 @@ def _scale(rgb, k):
     return tuple(c * k for c in rgb)
 
 
-def _hue(h):
+def _pure_hue(h):
     return tuple(c * 255 for c in colorsys.hsv_to_rgb(h % 1, 1, 1))
 
 
@@ -38,11 +38,48 @@ def _noise(i, step):
     return x - math.floor(x)
 
 
+GAMMA = 2.2
+
+
+def with_white(rgb, white):
+    """Mistura branco na cor (white em %, 0 = a cor como foi escolhida)."""
+    k = max(0, min(100, white or 0)) / 100
+    return tuple(c + (255 - c) * k for c in rgb)
+
+
+def purify(rgb):
+    """Cor da tela → cor do LED.
+
+    O monitor é "comprimido" (gama): um canal em 10% quase não aparece na tela,
+    mas no LED acende 10% de verdade e lava a cor de branco (#ff1a1a vira um
+    vermelho opaco). Corrige cada canal pela gama e devolve o brilho do canal
+    mais forte, então só a pureza muda, não o brilho.
+    """
+    top = max(rgb)
+    if top <= 0:
+        return (0, 0, 0)
+    linear = [(c / 255) ** GAMMA for c in rgb]
+    peak = max(linear)
+    return tuple(top * v / peak for v in linear)
+
+
+def led_rgb(sel, rgb):
+    """Ajuste final antes de mandar ao hardware. O modo Branco fica como está
+    (as temperaturas já foram acertadas no próprio LED)."""
+    return rgb if sel.get('mode') == 'white' else purify(rgb)
+
+
+def led_hex(sel):
+    """Cor da seleção já pronta para o LED (fita Tuya e placa-mãe)."""
+    return rgb_to_hex(purify(with_white(hex_to_rgb(sel.get('colour', '#ffffff')),
+                                        sel.get('white', 0))))
+
+
 def base_colour(sel):
     if sel.get('mode') == 'white':
         t = max(0, min(1000, sel.get('temperature', 500))) / 1000
         return tuple(a + (b - a) * t for a, b in zip(WARM, COLD))
-    return hex_to_rgb(sel.get('colour', '#ffffff'))
+    return with_white(hex_to_rgb(sel.get('colour', '#ffffff')), sel.get('white', 0))
 
 
 def effect_of(sel):
@@ -60,6 +97,10 @@ def frame(sel, t, sticks=1, leds=LEDS_PER_STICK):
     effect = effect_of(sel)
     period = PERIOD.get(sel.get('speed', 'medium'), 2.4)
     phase = (t / period) % 1
+    white = sel.get('white', 0)
+
+    def _hue(h):  # arco-íris e cia. também respeitam o "branco na cor"
+        return with_white(_pure_hue(h), white)
     out = []
     for s in range(sticks):
         row = []

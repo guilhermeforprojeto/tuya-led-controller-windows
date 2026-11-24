@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from effects import SPEED_FRACTION, openrgb_modes, uses_colour
-from fx import LEDS_PER_STICK, frame, is_animated
+from fx import LEDS_PER_STICK, frame, is_animated, led_hex, led_rgb
 
 HOST = '127.0.0.1'
 PORT = 6742
@@ -210,7 +210,7 @@ class PcLighting:
         level = sel.get('brightness', 100)
         if sel.get('mode') == 'white':
             return self.set_rgb(scale(white_rgb(sel.get('temperature', 500)), level), types)
-        rgb = scale(hex_to_rgb(sel.get('colour', '#ffffff')), level)
+        rgb = scale(hex_to_rgb(led_hex(sel)), level)
         if sel.get('mode') == 'effect':
             effect = sel.get('effect', 'static')
             return self.set_effect(effect, rgb if uses_colour(effect) else None,
@@ -256,9 +256,10 @@ def stick_address(device):
     return match.group(0).lower() if match else location or str(getattr(device, 'id', ''))
 
 
-def stick_colours(sticks, ordered, t):
+def stick_colours(sticks, ordered, t, led=False):
     """{endereço: [rgb × 5]}: pentes com a mesma seleção (grupo) animam juntos,
-    na ordem de `ordered`. sticks: endereço → {'sel', 'on', 'group'}."""
+    na ordem de `ordered`. sticks: endereço → {'sel', 'on', 'group'}.
+    led=True: cores ajustadas para o LED (a prévia usa as da tela)."""
     out, groups = {}, {}
     for a in ordered:
         st = sticks.get(a)
@@ -269,9 +270,10 @@ def stick_colours(sticks, ordered, t):
         else:
             groups.setdefault(st['group'], []).append(a)
     for members in groups.values():
-        rows = frame(sticks[members[0]]['sel'], t, sticks=len(members))
+        sel = sticks[members[0]]['sel']
+        rows = frame(sel, t, sticks=len(members))
         for a, row in zip(members, rows):
-            out[a] = row
+            out[a] = [led_rgb(sel, rgb) for rgb in row] if led else row
     return out
 
 
@@ -387,7 +389,7 @@ class RamAnimator:
         if self.solo is not None:
             return {a: [(255, 255, 255) if a == self.solo else (0, 0, 0)] * LEDS_PER_STICK
                     for a in ordered}
-        out = stick_colours(self.sticks, ordered, t)
+        out = stick_colours(self.sticks, ordered, t, led=True)
         for a, until in list(self._flash.items()):
             if until > t:
                 on = int((until - t) * 6) % 2 == 0

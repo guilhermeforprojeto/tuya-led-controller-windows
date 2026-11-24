@@ -108,7 +108,7 @@ def main():
     from dialogs import ConflictsWindow, AutomationWindow
     from flyout import TrayFlyout, tray_icon_class
     from dialogs import StickOrderWindow
-    from fx import is_animated, rgb_to_hex, single as fx_single
+    from fx import is_animated, led_hex, rgb_to_hex, single as fx_single
     from pc_rgb import stick_colours
     from colour_picker import ColourPicker
     from palettes import remember as remember_colour
@@ -183,7 +183,7 @@ def main():
     last = config.get('last') or {}
     default = {'mode': last.get('mode', 'colour'), 'colour': last.get('colour', '#a020f0'),
                'brightness': last.get('brightness', 50), 'temperature': last.get('temperature', 500),
-               'effect': 'breathing', 'speed': 'medium'}
+               'effect': 'breathing', 'speed': 'medium', 'white': 0}
     selections = {key: dict(default, **(config.get('selections') or {}).get(key, {}))
                   for key in ('all', 'strip', 'board', 'ram')}
     state = {'api': Tuya(config), 'pc': PcLighting(launcher=openrgb_launcher), 'busy': False,
@@ -194,7 +194,7 @@ def main():
     v = SimpleNamespace(
         target=tk.StringVar(value='all'),
         mode=tk.StringVar(), colour=tk.StringVar(), brightness=tk.IntVar(),
-        temperature=tk.IntVar(), effect=tk.StringVar(), speed=tk.StringVar(),
+        temperature=tk.IntVar(), effect=tk.StringVar(), speed=tk.StringVar(), white=tk.IntVar(),
         pc_sync=tk.BooleanVar(value=config.get('pc_sync', False)),
         power=tk.StringVar(value='Fita: estado não consultado'),
         warning_short=tk.StringVar(value=''),
@@ -204,13 +204,13 @@ def main():
         status=tk.StringVar(value='Escolha a aba, a cor ou o efeito e clique em Aplicar.' if ready
                             else 'Configure as credenciais para começar.'))
     status, power = v.status, v.power
-    SEL_KEYS = ('mode', 'colour', 'brightness', 'temperature', 'effect', 'speed')
+    SEL_KEYS = ('mode', 'colour', 'brightness', 'temperature', 'effect', 'speed', 'white')
 
     def load_selection(*_):
         state['loading'] = True
         sel = selections[v.target.get()]
-        for key in SEL_KEYS:
-            getattr(v, key).set(sel[key])
+        for key in SEL_KEYS:  # seleções antigas (rotinas, perfis) podem não ter 'white'
+            getattr(v, key).set(sel.get(key, default[key]))
         state['loading'] = False
 
     def store_selection(*_):
@@ -258,14 +258,14 @@ def main():
         mode = sel['mode']
         if mode == 'effect' and sel['effect'] != 'static':
             return [command('switch_led', True), command('work_mode', 'scene'),
-                    command('scene_data_v2', tuya_scene(sel['effect'], sel['colour'],
+                    command('scene_data_v2', tuya_scene(sel['effect'], led_hex(sel),
                                                         sel['brightness'], sel['speed']))]
         if mode == 'white':
             return [command('switch_led', True), command('work_mode', 'white'),
                     command('bright_value_v2', max(10, sel['brightness']*10)),
                     command('temp_value_v2', sel['temperature'])]
         return [command('switch_led', True), command('work_mode', 'colour'),
-                command('colour_data_v2', colour_value(sel['colour'], sel['brightness']))]
+                command('colour_data_v2', colour_value(led_hex(sel), sel['brightness']))]
 
     def stick_positions():
         return [int(c) for c in v.sticks.get() if c.isdigit()] or None

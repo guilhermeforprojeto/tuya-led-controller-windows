@@ -30,6 +30,24 @@ class FxTests(unittest.TestCase):
         self.assertTrue(all(row == rows[0] for row in rows))
         self.assertEqual(single(sel, 1.0), rows[0][0])
 
+    def test_led_colour_is_pure_and_keeps_brightness(self):
+        from fx import purify, led_hex
+        r, g, b = purify((255, 26, 26))           # "Vermelho" da paleta
+        self.assertEqual(r, 255)
+        self.assertLess(g, 3)                      # de 10% para ~1%: vermelho puro
+        self.assertEqual(max(purify((128, 13, 13))), 128)  # brilho preservado
+        self.assertEqual(purify((0, 0, 0)), (0, 0, 0))
+        self.assertEqual(led_hex({'colour': '#ff0000'}), '#ff0000')
+        # Com branco pedido de propósito, o branco aparece de verdade no LED.
+        self.assertGreater(int(led_hex({'colour': '#ff0000', 'white': 50})[3:5], 16), 40)
+
+    def test_white_in_colour_mixes_towards_white(self):
+        from fx import with_white
+        self.assertEqual(with_white((255, 0, 0), 0), (255, 0, 0))
+        self.assertEqual(with_white((255, 0, 0), 100), (255, 255, 255))
+        rows = frame({'mode': 'colour', 'colour': '#ff0000', 'white': 50}, 0)
+        self.assertEqual(rows[0][0], (255, 127.5, 127.5))
+
     def test_animated_flags(self):
         self.assertFalse(is_animated({'mode': 'colour'}))
         self.assertFalse(is_animated({'mode': 'effect', 'effect': 'static'}))
