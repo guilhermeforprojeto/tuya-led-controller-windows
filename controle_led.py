@@ -400,6 +400,9 @@ def main():
                 if cb == 'flyout':
                     state['flyout'].toggle()
                     continue
+                if cb == 'live':
+                    live_done(error)
+                    continue
                 if cb == 'removed':
                     state['fixing'] = False
                     if error:
@@ -480,6 +483,68 @@ def main():
                 power.set('Fita: ligada')
             report(result)
         submit(make_job(parts, lambda part: sel, sticks_only=target == 'ram'), done)
+
+    # ---- Aplicação ao vivo: placa-mãe e memórias (OpenRGB, no próprio PC) mudam
+    # ao selecionar; a fita (nuvem Tuya) continua esperando o Aplicar.
+    live = {'pending': None, 'timer': None, 'event': threading.Event()}
+
+    def live_worker():
+        while True:
+            live['event'].wait()
+            live['event'].clear()
+            job = live['pending']
+            live['pending'] = None
+            if job is None:
+                continue
+            try:
+                job()
+                results.put(('live', None, None))
+            except Exception as exc:
+                results.put(('live', None, str(exc)))
+
+    threading.Thread(target=live_worker, daemon=True).start()
+
+    def schedule_live(*_):
+        if state['loading'] or not config.get('pc_sync'):
+            return
+        if live['timer']:
+            root.after_cancel(live['timer'])
+        live['timer'] = root.after(90, live_apply)  # junta mudanças rápidas (arrastar)
+
+    def live_apply():
+        live['timer'] = None
+        target = v.target.get()
+        parts = [p for p in active_parts(target) if p != 'strip']
+        if not parts:
+            return
+        sel = dict(selections[target])
+        if target == 'all':
+            for part in parts:
+                selections[part] = dict(sel)
+        steps = []
+        if 'board' in parts:
+            steps.append(lambda s=sel: state['pc'].apply_selection(s, (0,)))
+        if 'ram' in parts:
+            positions = stick_positions() if target == 'ram' else None
+            steps.append(lambda s=sel, p=positions: state['pc'].apply_selection(s, (1,), p))
+
+        def job():
+            for step in steps:
+                step()
+        live['pending'] = job  # só o pedido mais recente importa
+        live['event'].set()
+
+    def live_done(error):
+        if error:
+            status.set('Placa-mãe/memórias: ' + error)
+            return
+        if live['timer'] is None and live['pending'] is None:
+            if v.target.get() == 'all':
+                paint_icon(selections['all'])
+            save_ram_state()
+
+    for key in SEL_KEYS:
+        getattr(v, key).trace_add('write', schedule_live)
 
     def quick_apply(changes):
         """Atalho da bandeja: aplica a mudança em tudo (aba Geral)."""
@@ -879,7 +944,8 @@ def main():
     panel = build_panel(frame, v, pick, apply, set_power, EFFECTS, SPEEDS,
                         lambda: results.put(('fix', None, None)),
                         SimpleNamespace(preview=ram_preview, open_order=open_stick_order,
-                                        toggle=toggle_stick, only_selected=only_selected))
+                                        toggle=toggle_stick, only_selected=only_selected,
+                                        strip_ready=tuya_ready))
     set_header_icon = panel.set_icon
 
     def show():

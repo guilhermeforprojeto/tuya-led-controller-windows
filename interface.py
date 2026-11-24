@@ -660,11 +660,15 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
     label(ends, 'Frio', fg=MUTED, font=(FONT, 8)).pack(side='right')
 
     percent = section(shell, 'Brilho', '')
-    Slider(shell, v.brightness, 1, 100, step=5).pack(fill='x')
+    bright_slider = Slider(shell, v.brightness, 1, 100, step=5)
+    bright_slider.pack(fill='x')
 
     action = PillButton(shell, '', apply_selection, radius=12, height=48, fill=ACCENT,
                         hover=ACCENT_HOVER, fg=ACCENT_TEXT, font=(FONT, 11, 'bold'))
     action.pack(fill='x', pady=(22, 0))
+    live_hint = tk.Label(shell, bg=BG, fg=MUTED, font=(FONT, 9), anchor='w', justify='left',
+                         wraplength=420)
+    live_hint.pack(fill='x', pady=(8, 0))
 
     footer = tk.Frame(shell, bg=BG)
     footer.pack(side='bottom', fill='x', pady=(14, 0))
@@ -767,11 +771,36 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
             colour_tools.pack(fill='x')
         if sticks_mode():
             stick_box.pack(fill='x', after=targets)
-            stick_hint.configure(text='Aplicar muda só os marcados; os outros continuam como estão '
-                                      '(use Desligar ou Apagar outros).')
+            stick_hint.configure(text='As mudanças valem só para os marcados; os outros continuam '
+                                      'como estão (use Desligar ou Apagar outros).')
         else:
             stick_box.pack_forget()
-        action.set_text(f'Aplicar em {where}')
+        # Placa-mãe e memórias (OpenRGB, no PC) mudam ao selecionar; a fita
+        # (nuvem Tuya) só quando clica, para não mandar um comando a cada toque.
+        target = v.target.get()
+        local = v.pc_sync.get()
+        strip = ram.strip_ready() if ram is not None and hasattr(ram, 'strip_ready') else True
+        if local and target in ('board', 'ram'):
+            show_action, text = False, ''
+            hint = 'As mudanças aparecem na hora.'
+        elif local and target == 'all':
+            show_action, text = strip, 'Aplicar na fita'
+            hint = ('Placa-mãe e memórias mudam na hora; a fita (nuvem) muda ao clicar.' if strip
+                    else 'As mudanças aparecem na hora.')
+        else:
+            show_action, text, hint = True, 'Aplicar na fita', ''
+        action.set_text(text)
+        live_hint.configure(text=hint)
+        if show_action:
+            action.pack(fill='x', pady=(22, 0), before=live_hint)
+        else:
+            action.pack_forget()
+        if hint:
+            live_hint.pack(fill='x', pady=(8 if show_action else 22, 0), after=bright_slider)
+            if show_action:
+                live_hint.pack_configure(after=action)
+        else:
+            live_hint.pack_forget()
         colour = white_preview(v.temperature.get()) if mode == 'white' else v.colour.get()
         draw_preview(where, mode, colour, effect_name, effect_colour)
 

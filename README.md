@@ -197,3 +197,10 @@ brilho não muda. O modo **Branco** não passa por essa correção.
 
 Para clarear de propósito, use **Branco na cor** (abaixo das cores): 0% é a cor pura e
 quanto mais alto, mais branca. Vale também para os efeitos.
+
+## O que muda na hora e o que espera o clique
+
+- **Placa-mãe e memórias** (OpenRGB, no próprio PC): mudam assim que você escolhe a cor,
+  o efeito, o brilho ou o branco. Nas abas Placa-mãe e Memórias não há botão Aplicar.
+- **Fita** (nuvem Tuya): só muda ao clicar em **Aplicar na fita**, para não mandar um
+  comando pela internet a cada toque. Na aba Geral, o botão envia a seleção para a fita.
