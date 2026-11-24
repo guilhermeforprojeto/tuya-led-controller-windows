@@ -2,7 +2,7 @@ import sys, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from shapes import concentric, squircle_points
-from conflicts import analyse, fix_script, DISABLED
+from conflicts import analyse, stop_script, summary, DISABLED
 
 
 class ShapeTests(unittest.TestCase):
@@ -35,22 +35,49 @@ class IconTests(unittest.TestCase):
 
 
 class ConflictTests(unittest.TestCase):
-    def test_asus_service_running_or_enabled(self):
-        self.assertEqual([k for k, _ in analyse((True, 2), None, [1], [])], ['asus'])
-        self.assertEqual([k for k, _ in analyse((False, 2), None, [1], [])], ['asus'])
-        self.assertEqual(analyse((False, DISABLED), None, [1], []), [])
-        self.assertEqual(analyse(None, None, [1], []), [])
+    def run_analyse(self, procs=(), services=None, installed=(), store=(), pids=(1,),
+                    openrgb_service=None, shortcuts=()):
+        services = services or {}
+        return analyse(set(procs), lambda n: services.get(n), list(installed), list(store),
+                       list(pids), openrgb_service, list(shortcuts))
+
+    def test_asus_hal_processes_installed_and_store(self):
+        found = self.run_analyse(procs={'aac3572dramhal_x86.exe', 'chrome.exe'},
+                                 installed=[('Kingston AURA DRAM Component', 'msiexec /x{1}'),
+                                            ('Aurora HDR', '')],
+                                 store=['B9ECED6F.ArmouryCrate_6.7.6.0_x64__q'])
+        self.assertEqual([f['key'] for f in found], ['asus'])
+        asus = found[0]
+        self.assertTrue(asus['active'])
+        self.assertEqual(asus['running'], ['aac3572dramhal_x86.exe'])
+        self.assertEqual([n for n, _ in asus['installed']], ['Kingston AURA DRAM Component'])
+        self.assertEqual(len(asus['store']), 1)
+
+    def test_service_disabled_is_ignored_but_installed_alerts(self):
+        found = self.run_analyse(services={'LightingService': (False, DISABLED)})
+        self.assertEqual(found, [])
+        found = self.run_analyse(services={'LightingService': (False, 2)})
+        self.assertFalse(found[0]['active'])
+        self.assertIn('(instalado)', summary(found))
+        self.assertIn('remova todo e qualquer', summary(found))
+
+    def test_other_rgb_software(self):
+        found = self.run_analyse(procs={'icue.exe', 'signalrgb.exe'})
+        self.assertEqual({f['key'] for f in found}, {'icue', 'signalrgb'})
 
     def test_duplicate_openrgb(self):
-        self.assertEqual([k for k, _ in analyse(None, None, [1, 2], [])], ['openrgb'])
-        # Atalho na Inicialização só conflita se o OpenRGB já roda como serviço.
-        self.assertEqual([k for k, _ in analyse(None, (True, 2), [1], ['x.lnk'])], ['openrgb'])
-        self.assertEqual(analyse(None, None, [1], ['x.lnk']), [])
+        self.assertEqual([f['key'] for f in self.run_analyse(pids=(1, 2))], ['openrgb'])
+        self.assertEqual([f['key'] for f in self.run_analyse(openrgb_service=(True, 2),
+                                                             shortcuts=['x.lnk'])], ['openrgb'])
+        self.assertEqual(self.run_analyse(shortcuts=['x.lnk']), [])
 
-    def test_fix_script_keeps_server(self):
-        text = fix_script(r'C:\b', [r'C:\s\OpenRGB.lnk'])
-        self.assertIn('Set-Service -Name LightingService -StartupType Disabled', text)
-        self.assertIn("Move-Item -LiteralPath 'C:\\s\\OpenRGB.lnk'", text)
+    def test_stop_script(self):
+        found = self.run_analyse(procs={'aac3572mbhal_x86.exe'},
+                                 services={'LightingService': (True, 2)}, pids=(1, 2))
+        text = stop_script(found, r"C:\b")
+        self.assertIn("Set-Service -Name 'LightingService' -StartupType Disabled", text)
+        self.assertIn("Stop-Process -Name 'aac3572mbhal_x86' -Force", text)
+        self.assertNotIn("Stop-Process -Name 'openrgb'", text)
         self.assertIn('$_.Id -ne $server', text)
 
 

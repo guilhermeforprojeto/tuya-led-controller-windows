@@ -103,7 +103,12 @@ def main():
             return
     from PIL import ImageTk
     from icon_art import draw_icon, icon_for
-    from conflicts import find_conflicts, run_fix
+    from conflicts import (find_conflicts, stop_now, uninstall, open_apps_settings,
+                           summary as conflict_summary)
+    from dialogs import ConflictsWindow, AutomationWindow
+    from automation import due_routines, pick_profile, ProfileSwitcher
+    from winproc import process_names, foreground_process, windowed_apps
+    from datetime import datetime
 
     folder = Path(os.environ.get('APPDATA', str(Path.home()))) / 'ControleLED'
     folder.mkdir(parents=True, exist_ok=True)
@@ -319,19 +324,23 @@ def main():
                     show_conflicts(value)
                     continue
                 if cb == 'fix':
-                    fix_conflicts()
+                    open_conflicts()
+                    continue
+                if cb == 'auto':
+                    open_automation()
                     continue
                 if cb == 'fixed':
                     state['fixing'] = False
                     if error:
-                        status.set(error)
-                        log('Correção de conflitos: ' + error)
+                        set_conflict_status(error)
+                        log('Parar programas: ' + error)
                     elif value:
-                        log('Conflitos corrigidos; reaplicando as cores do PC.')
-                        status.set('Conflitos corrigidos. Reaplicando as cores…')
+                        log('Programas de RGB parados; reaplicando as cores do PC.')
+                        set_conflict_status('Programas parados e cores reaplicadas. Para não '
+                                            'voltarem ao reiniciar, desinstale-os.')
                         reapply_pc()
                     else:
-                        status.set('Correção cancelada.')
+                        set_conflict_status('Cancelado no pedido de permissão.')
                     check_conflicts()
                     continue
                 state['busy'] = False
@@ -412,8 +421,14 @@ def main():
     state['conflicts'] = []
     state['fixing'] = False
 
+    state['conflict_win'] = None
+    state['notified'] = set()
+
     def check_conflicts():
-        if not config.get('pc_sync') or os.name != 'nt':
+        if os.name != 'nt':
+            return
+        if not config.get('pc_sync'):
+            # Sem placa/memórias no app, os outros programas não atrapalham.
             show_conflicts([])
             return
 
@@ -426,29 +441,73 @@ def main():
             results.put(('conflicts', found, None))
         threading.Thread(target=run, daemon=True).start()
 
-    def show_conflicts(found):
-        keys = [key for key, _ in found]
-        if keys and keys != [k for k, _ in state['conflicts']]:
-            log('Conflitos encontrados: ' + ', '.join(keys))
-        state['conflicts'] = found
-        v.warning.set(' '.join(text for _, text in found))
+    def notify(title, message):
         try:
+            icon.notify(message, title)
+        except Exception:
+            pass
+
+    def show_conflicts(found):
+        new = [f for f in found if f['key'] not in state['notified']]
+        if new:
+            log('Interferindo nos LEDs: ' + ', '.join(f['name'] for f in found))
+            notify('Programas interferindo nos LEDs',
+                   ', '.join(f['name'] for f in new) + '. Abra o Controle LED e clique em Resolver.')
+        state['notified'] = {f['key'] for f in found}
+        state['conflicts'] = found
+        v.warning.set(conflict_summary(found))
+        win = state['conflict_win']
+        if win and win.win.winfo_exists():
+            win.refresh(found)
+        try:
+            icon.title = ('⚠ Programas interferindo · ' if found else '') + 'Controle LED · PC'
             icon.update_menu()
         except Exception:
             pass
 
-    def fix_conflicts():
-        if state['fixing'] or not state['conflicts']:
+    def set_conflict_status(text):
+        status.set(text)
+        win = state['conflict_win']
+        if win:
+            win.set_status(text)
+
+    def open_conflicts():
+        show()
+        win = state['conflict_win']
+        if win and win.win.winfo_exists():
+            win.win.lift()
+        else:
+            win = state['conflict_win'] = ConflictsWindow(root, {
+                'stop': stop_conflicts, 'uninstall': uninstall_program,
+                'settings': open_apps_settings, 'recheck': check_conflicts})
+        win.refresh(state['conflicts'])
+        check_conflicts()
+
+    def stop_conflicts():
+        if state['fixing']:
             return
+        if not state['conflicts']:
+            return set_conflict_status('Nada para parar.')
         state['fixing'] = True
-        status.set('Corrigindo conflitos… confirme o pedido de permissão do Windows.')
+        set_conflict_status('Parando os programas… confirme o pedido de permissão do Windows.')
+        found = list(state['conflicts'])
 
         def run():
             try:
-                results.put(('fixed', run_fix(folder), None))
+                results.put(('fixed', stop_now(found, folder), None))
             except Exception as exc:
                 results.put(('fixed', None, str(exc)))
         threading.Thread(target=run, daemon=True).start()
+
+    def uninstall_program(cmd):
+        try:
+            if uninstall(cmd):
+                set_conflict_status('Desinstalador aberto. Ao terminar, reinicie o PC e clique '
+                                    'em Verificar de novo.')
+            else:
+                set_conflict_status('Desinstalação cancelada.')
+        except RuntimeError as exc:
+            set_conflict_status(str(exc))
 
     def reapply_pc():
         parts = [p for p in active_parts('all') if p != 'strip']
@@ -456,8 +515,100 @@ def main():
             submit(make_job(parts, lambda part: selections[part]), report)
 
     def periodic_check():
+        # A cada minuto: o aviso some assim que o programa é removido e volta se ele voltar.
         check_conflicts()
-        root.after(5 * 60 * 1000, periodic_check)
+        root.after(60 * 1000, periodic_check)
+
+    # Rotinas por horário e perfis por jogo/app.
+    auto = {'routines': config.get('routines') or [], 'profiles': config.get('profiles') or []}
+    switcher = ProfileSwitcher()
+    state['last_run'] = {}
+    state['pending'] = None  # ação que esperou o envio anterior terminar
+    state['auto_win'] = None
+    state['profile_label'] = ''
+
+    def save_automation():
+        config['routines'], config['profiles'] = auto['routines'], auto['profiles']
+        try:
+            save_config(config)
+        except OSError:
+            pass
+
+    def send_all(sel_for, prefix):
+        """Envia para tudo. False se já há um envio em andamento (tenta depois)."""
+        parts = active_parts('all')
+        if not parts:
+            return True
+        if state['busy']:
+            return False
+
+        def done(result):
+            if 'strip' in parts:
+                power.set('Fita: ligada')
+            report(result)
+            status.set(prefix + ' ' + status.get())
+        submit(make_job(parts, sel_for), done)
+        return True
+
+    def run_routine(r):
+        if r['action'] == 'apply':
+            sel = dict(r['selection'])
+            for key in ('all', 'strip', 'board', 'ram'):
+                selections[key] = dict(sel)
+            load_selection()
+            remember()
+            if switcher.active:
+                # Jogo/app aberto: a cor da rotina entra quando ele fechar.
+                return True
+            paint_icon(sel)
+            return send_all(lambda part: sel, f"Rotina {r['time']}:")
+        if state['busy']:
+            return False
+        set_power(r['action'] == 'on', 'all')
+        return True
+
+    def automation_tick():
+        try:
+            if state['pending'] and state['pending']():
+                state['pending'] = None
+            for r in due_routines(auto['routines'], datetime.now(), state['last_run']):
+                log(f"Rotina {r['time']}: {r['action']}")
+                if not run_routine(r):
+                    state['pending'] = lambda r=r: run_routine(r)
+            if auto['profiles'] or switcher.active:
+                profile = pick_profile(auto['profiles'], process_names(), foreground_process())
+                decision = switcher.decide(profile)
+                if decision:
+                    kind, p = decision
+                    if kind == 'apply':
+                        sel = dict(p['selection'])
+                        state['profile_label'] = p.get('label') or p['process']
+                        log('Perfil ativado: ' + state['profile_label'])
+                        paint_icon(sel)
+                        action = lambda: send_all(lambda part: sel, f"Perfil {state['profile_label']}:")
+                    else:
+                        log('Perfil encerrado; voltando às cores salvas.')
+                        state['profile_label'] = ''
+                        paint_icon(selections['all'])
+                        action = lambda: send_all(lambda part: selections[part], 'Cores restauradas.')
+                    if not action():
+                        state['pending'] = action
+                    try:
+                        icon.update_menu()
+                    except Exception:
+                        pass
+        except Exception as exc:
+            log('Automação: ' + str(exc))
+        root.after(3000, automation_tick)
+
+    def open_automation():
+        show()
+        win = state['auto_win']
+        if win and win.win.winfo_exists():
+            win.win.lift()
+            return
+        state['auto_win'] = AutomationWindow(root, auto, EFFECTS, lambda: dict(selections['all']),
+                                             windowed_apps, save_automation)
 
     def pick():
         selected = colorchooser.askcolor(v.colour.get(), parent=root)[1]
@@ -593,7 +744,9 @@ def main():
         tasks.put(None)
         root.destroy()
 
-    build_menu(root, settings, refresh, root.withdraw, quit_app)
+    build_menu(root, settings, refresh, root.withdraw, quit_app,
+               [('Rotinas e perfis por jogo/app…', open_automation),
+                ('Programas que interferem nos LEDs…', open_conflicts)])
 
     def paint_window_icon(sel):
         art = icon_for(sel)
@@ -643,8 +796,10 @@ def main():
     icon = pystray.Icon('ControleLED', draw_icon(size=64, **icon_for(selections['all'])),
                         'Controle LED · PC', menu=pystray.Menu(
         pystray.MenuItem('Abrir controles', lambda *_: results.put(('show', None, None)), default=True),
-        pystray.MenuItem('⚠ Corrigir conflitos de cores', lambda *_: results.put(('fix', None, None)),
+        pystray.MenuItem('⚠ Programas interferindo nos LEDs…', lambda *_: results.put(('fix', None, None)),
                          visible=lambda _item: bool(state['conflicts'])),
+        pystray.MenuItem(lambda _item: 'Perfil ativo: ' + state['profile_label'], None,
+                         enabled=False, visible=lambda _item: bool(state['profile_label'])),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem('Cores', pystray.Menu(*colour_items, pystray.Menu.SEPARATOR, *white_items)),
         pystray.MenuItem('Efeitos', pystray.Menu(*effect_items, pystray.Menu.SEPARATOR,
@@ -653,6 +808,8 @@ def main():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem('Ligar', lambda *_: results.put(('power', True, None))),
         pystray.MenuItem('Desligar', lambda *_: results.put(('power', False, None))),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem('Rotinas e perfis…', lambda *_: results.put(('auto', None, None))),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem('Sair', lambda *_: results.put(('quit', None, None)))))
     threading.Thread(target=icon.run, daemon=True).start()
@@ -664,6 +821,7 @@ def main():
         messagebox.showwarning('Integração Windows', str(exc), parent=root)
     root.after(100, poll)
     root.after(1500, periodic_check)
+    root.after(4000, automation_tick)
     if not ready:
         root.after(200, settings)
     if startup_launch and ready:

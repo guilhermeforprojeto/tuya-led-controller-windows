@@ -188,11 +188,12 @@ class Segmented(_Canvas):
 
 class ChipGrid(_Canvas):
     """Grade de opções (efeitos) dentro de um card: raio concêntrico ao card."""
-    def __init__(self, parent, variable, options, columns=4, chip_h=34, gap=6):
+    def __init__(self, parent, variable, options, columns=4, chip_h=34, gap=6, chip_fill=SURFACE_2):
         self.rows = -(-len(options) // columns)
         super().__init__(parent, height=self.rows * chip_h + (self.rows - 1) * gap, cursor='hand2')
         self.variable, self.options = variable, list(options)
         self.columns, self.chip_h, self.gap = columns, chip_h, gap
+        self.chip_fill = chip_fill
         self.bind('<Configure>', lambda _: self.redraw())
         self.bind('<Button-1>', self._click)
         self._trace = variable.trace_add('write', lambda *_: self.redraw())
@@ -216,7 +217,7 @@ class ChipGrid(_Canvas):
             x0, y0, x1, y1 = self._cell(i)
             selected = key == self.variable.get()
             self.shape(x0, y0, x1, y1, CHIP_R,
-                       fill=mix(SURFACE, ACCENT, 0.22) if selected else SURFACE_2,
+                       fill=mix(SURFACE, ACCENT, 0.22) if selected else self.chip_fill,
                        outline=ACCENT if selected else '', width=1)
             self.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=text,
                              fill=TEXT if selected else MUTED, font=(FONT, 9))
@@ -353,6 +354,9 @@ def setup_theme(root):
     style.map('TCheckbutton', background=[('active', BG)])
     style.configure('TEntry', fieldbackground=SURFACE_2, foreground=TEXT, insertcolor=TEXT)
     style.configure('TSeparator', background=LINE)
+    style.configure('Vertical.TScrollbar', background=SURFACE_3, troughcolor=BG, bordercolor=BG,
+                    arrowcolor=MUTED, lightcolor=SURFACE_3, darkcolor=SURFACE_3)
+    style.map('Vertical.TScrollbar', background=[('active', MUTED)])
 
 
 TARGETS = [('all', 'Geral'), ('strip', 'Fita'), ('board', 'Placa-mãe'), ('ram', 'Memórias')]
@@ -389,7 +393,7 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
     label(banner.body, '⚠', fg=WARN, font=(FONT, 13)).pack(side='left', padx=(2, 8))
     label(banner.body, textvariable=v.warning, fg=WARN, wraplength=290, justify='left',
           font=(FONT, 9)).pack(side='left', fill='x', expand=True)
-    fix_button = PillButton(banner.body, 'Corrigir', fix_conflicts, radius=BANNER_BTN_R,
+    fix_button = PillButton(banner.body, 'Resolver', fix_conflicts, radius=BANNER_BTN_R,
                             height=32, fill=WARN, hover='#ffd28c', fg='#2a1c05',
                             font=(FONT, 9, 'bold'))
     fix_button.configure(width=86)
@@ -533,7 +537,7 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
     return set_icon
 
 
-def build_menu(root, settings, refresh, minimize, quit_app):
+def build_menu(root, settings, refresh, minimize, quit_app, extras=()):
     menu = tk.Menu(root)
     file_menu = tk.Menu(menu, tearoff=False)
     file_menu.add_command(label='Minimizar para a bandeja', command=minimize)
@@ -542,6 +546,8 @@ def build_menu(root, settings, refresh, minimize, quit_app):
     menu.add_cascade(label='Arquivo', menu=file_menu)
     options = tk.Menu(menu, tearoff=False)
     options.add_command(label='Configurações…', command=settings)
+    for text, command in extras:
+        options.add_command(label=text, command=command)
     options.add_separator()
     options.add_command(label='Atualizar estado da fita', command=refresh)
     menu.add_cascade(label='Opções', menu=options)
