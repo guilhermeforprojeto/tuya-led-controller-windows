@@ -107,6 +107,8 @@ def main():
                            summary as conflict_summary)
     from dialogs import ConflictsWindow, AutomationWindow
     from flyout import TrayFlyout, tray_icon_class
+    from colour_picker import ColourPicker
+    from palettes import remember as remember_colour
     from automation import due_routines, pick_profile, ProfileSwitcher
     from winproc import process_names, foreground_process, windowed_apps
     from datetime import datetime
@@ -190,7 +192,7 @@ def main():
         temperature=tk.IntVar(), effect=tk.StringVar(), speed=tk.StringVar(),
         pc_sync=tk.BooleanVar(value=config.get('pc_sync', False)),
         power=tk.StringVar(value='Fita: estado não consultado'),
-        warning=tk.StringVar(value=''),
+        warning_short=tk.StringVar(value=''),
         status=tk.StringVar(value='Escolha a aba, a cor ou o efeito e clique em Aplicar.' if ready
                             else 'Configure as credenciais para começar.'))
     status, power = v.status, v.power
@@ -461,7 +463,12 @@ def main():
                    ', '.join(f['name'] for f in new) + '. Abra o Controle LED e clique em Resolver.')
         state['notified'] = {f['key'] for f in found}
         state['conflicts'] = found
-        v.warning.set(conflict_summary(found))
+        if len(found) == 1:
+            v.warning_short.set(f"{found[0]['name']} está mudando as cores dos LEDs.")
+        elif found:
+            v.warning_short.set(f'{len(found)} programas estão mudando as cores dos LEDs.')
+        else:
+            v.warning_short.set('')
         win = state['conflict_win']
         if win and win.win.winfo_exists():
             win.refresh(found)
@@ -616,12 +623,22 @@ def main():
         state['auto_win'] = AutomationWindow(root, auto, EFFECTS, lambda: dict(selections['all']),
                                              windowed_apps, save_automation)
 
+    def open_picker(initial, on_pick):
+        def picked(colour):
+            config['recent_colours'] = remember_colour(config.get('recent_colours') or [], colour)
+            try:
+                save_config(config)
+            except OSError:
+                pass
+            on_pick(colour)
+        ColourPicker(root, initial, picked, config.get('recent_colours') or [])
+
     def pick():
-        selected = colorchooser.askcolor(v.colour.get(), parent=root)[1]
-        if selected:
-            v.colour.set(selected)
+        def chosen(colour):
+            v.colour.set(colour)
             if v.mode.get() == 'white':
                 v.mode.set('colour')
+        open_picker(v.colour.get(), chosen)
 
     def loaded(items):
         values = {item['code']: item['value'] for item in items}
@@ -801,12 +818,21 @@ def main():
     paint_window_icon(selections['all'])
 
     # Botão direito no ícone: painel no visual do app em vez do menu nativo.
+    def flyout_quick(changes):
+        quick_apply(changes)
+        flyout.refresh()
+
+    def flyout_pick():
+        show()
+        open_picker(selections['all'].get('colour'),
+                    lambda c: quick_apply({'mode': 'colour', 'colour': c}))
+
     flyout = TrayFlyout(root, SimpleNamespace(
         selection=lambda: dict(selections['all']),
-        quick=quick_apply,
+        quick=flyout_quick, pick_colour=flyout_pick,
         power=lambda on: set_power(on, 'all'),
         open_main=show, open_auto=open_automation, open_conflicts=open_conflicts,
-        quit=quit_app, conflicts=lambda: state['conflicts'],
+        quit=quit_app, warning=v.warning_short, status=status,
         subtitle=lambda: power.get() + (' · Perfil: ' + state['profile_label']
                                         if state['profile_label'] else ''),
         icon_image=lambda size: ImageTk.PhotoImage(draw_icon(size=size, **icon_for(selections['all'])))))
@@ -842,6 +868,7 @@ def main():
     root.after(100, poll)
     root.after(1500, periodic_check)
     root.after(4000, automation_tick)
+    root.after(2500, flyout.prepare)
     if not ready:
         root.after(200, settings)
     if startup_launch and ready:

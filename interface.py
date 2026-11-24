@@ -2,11 +2,14 @@
 
 Cantos contínuos (squircle) desenhados no Canvas e raios concêntricos:
 o raio de um elemento interno é o raio do externo menos o espaço entre eles.
+Poucas superfícies: seções separadas por espaço e título, só a prévia é card.
 """
+import sys
 import tkinter as tk
 import webbrowser
 from tkinter import ttk
 
+from palettes import FAVOURITES, name_for
 from shapes import concentric, squircle_points
 
 # Cores
@@ -16,23 +19,30 @@ SURFACE_2 = '#202839'
 SURFACE_3 = '#2c3549'
 LINE = '#2a3346'
 TEXT = '#f2f4fa'
-MUTED = '#9aa4ba'
+TEXT_2 = '#c9d0de'
+MUTED = '#8f9ab0'
 ACCENT = '#c6a0ff'
 ACCENT_HOVER = '#d6bbff'
+ACCENT_SOFT = '#e4d4ff'
 ACCENT_TEXT = '#1a1030'
 WARN = '#ffbf5e'
-WARN_BG = '#2a2115'
+WARN_BG = '#251d12'
+OK = '#5fd39a'
 
 # Raios: padroniza os de fora e calcula os de dentro.
-CARD_R, CARD_PAD = 20, 14
-CHIP_R = concentric(CARD_R, CARD_PAD)          # 6
-SEG_R, SEG_PAD = 14, 4
-SEG_ITEM_R = concentric(SEG_R, SEG_PAD)        # 10
-BTN_R = 12
-BANNER_R, BANNER_PAD = 18, 10
-BANNER_BTN_R = concentric(BANNER_R, BANNER_PAD)  # 8
+CARD_R, CARD_PAD = 16, 12
+CHIP_R = concentric(CARD_R, CARD_PAD)          # 4: chip dentro de card
+FREE_R = 9                                      # chip/botão solto na tela
+SEG_R, SEG_PAD = 12, 3
+SEG_ITEM_R = concentric(SEG_R, SEG_PAD)        # 9
+BTN_R = 10
+BANNER_R, BANNER_PAD = 14, 8
+BANNER_BTN_R = concentric(BANNER_R, BANNER_PAD)  # 6
 
-FONT = 'Segoe UI'
+# Windows 11 tem a Segoe UI Variable (melhor leitura em tamanhos pequenos).
+_W11 = sys.platform == 'win32' and sys.getwindowsversion().build >= 22000
+FONT = 'Segoe UI Variable Text' if _W11 else 'Segoe UI'
+DISPLAY = 'Segoe UI Variable Display' if _W11 else 'Segoe UI'
 
 
 def mix(a, b, t):
@@ -45,6 +55,17 @@ def mix(a, b, t):
 def white_preview(temperature):
     t = temperature / 1000
     return '#%02x%02x%02x' % tuple(round(a+(b-a)*t) for a, b in zip((255, 186, 107), (205, 228, 255)))
+
+
+def draw_warning(canvas, x, y, size, colour):
+    """Ícone de alerta desenhado (triângulo com exclamação)."""
+    s = size
+    canvas.create_polygon(x + s / 2, y + 1, x + s - 1, y + s - 2, x + 1, y + s - 2,
+                          fill='', outline=colour, width=1.6, joinstyle='round')
+    canvas.create_line(x + s / 2, y + s * 0.38, x + s / 2, y + s * 0.62, fill=colour,
+                       width=1.8, capstyle='round')
+    canvas.create_oval(x + s / 2 - 1.1, y + s * 0.74, x + s / 2 + 1.1, y + s * 0.74 + 2.2,
+                       fill=colour, outline='')
 
 
 class _Canvas(tk.Canvas):
@@ -61,6 +82,12 @@ class _Canvas(tk.Canvas):
     def shape(self, x0, y0, x1, y1, radius, **kwargs):
         kwargs.setdefault('outline', '')
         return self.create_polygon(squircle_points(x0, y0, x1, y1, radius), **kwargs)
+
+    def watch(self, variable):
+        """Redesenha quando a variável muda (e solta o vínculo ao destruir)."""
+        trace = variable.trace_add('write', lambda *_: self.redraw())
+        self.bind('<Destroy>', lambda e: e.widget is self and variable.trace_remove('write', trace),
+                  add='+')
 
 
 class RoundBox(_Canvas):
@@ -87,17 +114,19 @@ class RoundBox(_Canvas):
 
 class PillButton(_Canvas):
     def __init__(self, parent, text, command, radius=BTN_R, height=40, fill=SURFACE_2,
-                 hover=SURFACE_3, fg=TEXT, font=(FONT, 10, 'bold')):
+                 hover=SURFACE_3, fg=TEXT, font=None):
         # largura mínima: quem define o tamanho é o pack/grid (botões lado a lado iguais)
         super().__init__(parent, height=height, width=10, cursor='hand2', takefocus=True)
         self.text, self.command, self.radius = text, command, radius
         self.colours = {'fill': fill, 'hover': hover, 'fg': fg}
-        self.font, self._hover, self._focus = font, False, False
+        self.font = font or (FONT, 10, 'bold')
+        self._hover = self._focus = self._down = False
         for seq, fn in [('<Configure>', lambda _: self.redraw()),
                         ('<Enter>', lambda _: self._set('_hover', True)),
-                        ('<Leave>', lambda _: self._set('_hover', False)),
+                        ('<Leave>', lambda _: self._set('_hover', False) or self._set('_down', False)),
                         ('<FocusIn>', lambda _: self._set('_focus', True)),
                         ('<FocusOut>', lambda _: self._set('_focus', False)),
+                        ('<ButtonPress-1>', lambda _: self._set('_down', True)),
                         ('<ButtonRelease-1>', self._click),
                         ('<Return>', lambda _: self.command()),
                         ('<space>', lambda _: self.command())]:
@@ -108,6 +137,7 @@ class PillButton(_Canvas):
         self.redraw()
 
     def _click(self, event):
+        self._set('_down', False)
         if 0 <= event.x <= self.winfo_width() and 0 <= event.y <= self.winfo_height():
             self.command()
 
@@ -119,6 +149,8 @@ class PillButton(_Canvas):
         self.delete('all')
         w, h = self.winfo_width(), self.winfo_height()
         fill = self.colours['hover' if self._hover else 'fill']
+        if self._down:  # resposta imediata ao clique
+            fill = mix(fill, BG, 0.18)
         self.shape(0, 0, w - 1, h - 1, self.radius, fill=fill,
                    outline=ACCENT if self._focus else '', width=2)
         self.create_text(w / 2, h / 2, text=self.text, fill=self.colours['fg'], font=self.font)
@@ -126,7 +158,7 @@ class PillButton(_Canvas):
 
 class Segmented(_Canvas):
     """Abas em pílula: o item escolhido fica concêntrico ao contêiner."""
-    def __init__(self, parent, variable, options, height=42, font_size=10):
+    def __init__(self, parent, variable, options, height=40, font_size=10):
         super().__init__(parent, height=height, cursor='hand2', takefocus=True)
         self.variable, self.options = variable, list(options)
         self.visible = [k for k, _ in self.options]
@@ -139,8 +171,7 @@ class Segmented(_Canvas):
         self.bind('<Right>', lambda _: self._step(1))
         self.bind('<FocusIn>', lambda _: self.redraw())
         self.bind('<FocusOut>', lambda _: self.redraw())
-        self._trace = variable.trace_add('write', lambda *_: self.redraw())
-        self.bind('<Destroy>', lambda e: e.widget is self and variable.trace_remove('write', self._trace))
+        self.watch(variable)
 
     def set_visible(self, keys):
         self.visible = [k for k, _ in self.options if k in keys]
@@ -169,9 +200,8 @@ class Segmented(_Canvas):
     def redraw(self):
         self.delete('all')
         w, h = self.winfo_width(), self.winfo_height()
-        focused = self.has_focus()
-        self.shape(0, 0, w - 1, h - 1, SEG_R, fill=SURFACE_2,
-                   outline=ACCENT if focused else '', width=2)
+        self.shape(0, 0, w - 1, h - 1, SEG_R, fill=SURFACE,
+                   outline=ACCENT if self.has_focus() else '', width=2)
         labels = dict(self.options)
         n = len(self.visible)
         span = (w - 2 * SEG_PAD) / max(1, n)
@@ -180,24 +210,27 @@ class Segmented(_Canvas):
             selected = key == self.variable.get()
             if selected or i == self._hover:
                 self.shape(x0, SEG_PAD, x0 + span, h - SEG_PAD, SEG_ITEM_R,
-                           fill=SURFACE_3 if selected else mix(SURFACE_2, SURFACE_3, 0.45))
+                           fill=SURFACE_3 if selected else SURFACE_2)
             self.create_text(x0 + span / 2, h / 2, text=labels[key],
                              fill=TEXT if selected else MUTED,
                              font=(FONT, self.font_size, 'bold' if selected else 'normal'))
 
 
 class ChipGrid(_Canvas):
-    """Grade de opções (efeitos) dentro de um card: raio concêntrico ao card."""
-    def __init__(self, parent, variable, options, columns=4, chip_h=34, gap=6, chip_fill=SURFACE_2):
+    """Grade de opções. Discreta: só o item escolhido ganha cor."""
+    def __init__(self, parent, variable, options, columns=4, chip_h=32, gap=6,
+                 chip_fill=None, radius=FREE_R, font_size=9):
         self.rows = -(-len(options) // columns)
         super().__init__(parent, height=self.rows * chip_h + (self.rows - 1) * gap, cursor='hand2')
         self.variable, self.options = variable, list(options)
-        self.columns, self.chip_h, self.gap = columns, chip_h, gap
-        self.chip_fill = chip_fill
+        self.columns, self.chip_h, self.gap, self.radius = columns, chip_h, gap, radius
+        self.chip_fill = chip_fill or mix(self.cget('bg'), SURFACE_2, 0.75)
+        self.font_size, self._hover = font_size, None
         self.bind('<Configure>', lambda _: self.redraw())
         self.bind('<Button-1>', self._click)
-        self._trace = variable.trace_add('write', lambda *_: self.redraw())
-        self.bind('<Destroy>', lambda e: e.widget is self and variable.trace_remove('write', self._trace))
+        self.bind('<Motion>', lambda e: self._set_hover(self._index_at(e.x, e.y)))
+        self.bind('<Leave>', lambda _: self._set_hover(None))
+        self.watch(variable)
 
     def _cell(self, index):
         w = (self.winfo_width() - (self.columns - 1) * self.gap) / self.columns
@@ -205,22 +238,34 @@ class ChipGrid(_Canvas):
         x0, y0 = c * (w + self.gap), r * (self.chip_h + self.gap)
         return x0, y0, x0 + w, y0 + self.chip_h
 
-    def _click(self, event):
-        for i, (key, _) in enumerate(self.options):
+    def _index_at(self, x, y):
+        for i in range(len(self.options)):
             x0, y0, x1, y1 = self._cell(i)
-            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
-                self.variable.set(key)
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return i
+        return None
+
+    def _set_hover(self, index):
+        if index != self._hover:
+            self._hover = index
+            self.redraw()
+
+    def _click(self, event):
+        i = self._index_at(event.x, event.y)
+        if i is not None:
+            self.variable.set(self.options[i][0])
 
     def redraw(self):
         self.delete('all')
         for i, (key, text) in enumerate(self.options):
             x0, y0, x1, y1 = self._cell(i)
-            selected = key == self.variable.get()
-            self.shape(x0, y0, x1, y1, CHIP_R,
-                       fill=mix(SURFACE, ACCENT, 0.22) if selected else self.chip_fill,
-                       outline=ACCENT if selected else '', width=1)
+            selected = str(key) == str(self.variable.get())
+            fill = (mix(self.cget('bg'), ACCENT, 0.24) if selected else
+                    mix(self.chip_fill, '#ffffff', 0.06) if i == self._hover else self.chip_fill)
+            self.shape(x0, y0, x1, y1, self.radius, fill=fill)
             self.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=text,
-                             fill=TEXT if selected else MUTED, font=(FONT, 9))
+                             fill=ACCENT_SOFT if selected else TEXT_2,
+                             font=(FONT, self.font_size, 'bold' if selected else 'normal'))
 
 
 class Swatches(_Canvas):
@@ -230,22 +275,34 @@ class Swatches(_Canvas):
     def __init__(self, parent, variable, colours, pick):
         super().__init__(parent, height=self.SIZE + 8, cursor='hand2')
         self.variable, self.colours, self.pick = variable, colours, pick
+        self._hover = None
         self.bind('<Configure>', lambda _: self.redraw())
         self.bind('<Button-1>', self._click)
-        self._trace = variable.trace_add('write', lambda *_: self.redraw())
-        self.bind('<Destroy>', lambda e: e.widget is self and variable.trace_remove('write', self._trace))
+        self.bind('<Motion>', lambda e: self._set_hover(self._index_at(e.x, e.y)))
+        self.bind('<Leave>', lambda _: self._set_hover(None))
+        self.watch(variable)
 
     def _centre(self, i):
         return 4 + self.SIZE / 2 + i * (self.SIZE + self.GAP), 4 + self.SIZE / 2
 
-    def _click(self, event):
+    def _index_at(self, x, y):
         for i in range(len(self.colours) + 1):
-            x, y = self._centre(i)
-            if abs(event.x - x) <= self.SIZE / 2 + 3 and abs(event.y - y) <= self.SIZE / 2 + 3:
-                if i == len(self.colours):
-                    self.pick()
-                else:
-                    self.variable.set(self.colours[i])
+            cx, cy = self._centre(i)
+            if abs(x - cx) <= self.SIZE / 2 + 3 and abs(y - cy) <= self.SIZE / 2 + 3:
+                return i
+        return None
+
+    def _set_hover(self, index):
+        if index != self._hover:
+            self._hover = index
+            self.redraw()
+
+    def _click(self, event):
+        i = self._index_at(event.x, event.y)
+        if i == len(self.colours):
+            self.pick()
+        elif i is not None:
+            self.variable.set(self.colours[i])
 
     def redraw(self):
         self.delete('all')
@@ -253,22 +310,34 @@ class Swatches(_Canvas):
         current = self.variable.get().lower()
         for i, colour in enumerate(self.colours):
             x, y = self._centre(i)
+            grow = 1.5 if i == self._hover else 0
             if colour.lower() == current:
                 self.create_oval(x - r - 3, y - r - 3, x + r + 3, y + r + 3, outline=TEXT, width=2)
-            self.create_oval(x - r + 1, y - r + 1, x + r - 1, y + r - 1, fill=colour, outline='')
+            self.create_oval(x - r + 1 - grow, y - r + 1 - grow, x + r - 1 + grow, y + r - 1 + grow,
+                             fill=colour, outline='')
         x, y = self._centre(len(self.colours))
-        custom = current not in [c.lower() for c in self.colours]
+        custom = bool(current) and current not in [c.lower() for c in self.colours]
+        hover = self._hover == len(self.colours)
+        if custom:
+            self.create_oval(x - r - 3, y - r - 3, x + r + 3, y + r + 3, outline=TEXT, width=2)
         self.create_oval(x - r + 1, y - r + 1, x + r - 1, y + r - 1,
-                         fill=self.variable.get() if custom else SURFACE_2,
-                         outline=TEXT if custom else MUTED, width=2 if custom else 1,
-                         dash=() if custom else (3, 3))
-        self.create_text(x, y - 1, text='+', fill=TEXT, font=(FONT, 13, 'bold'))
+                         fill=self.variable.get() if custom else (SURFACE_3 if hover else SURFACE_2),
+                         outline='')
+        # "+" desenhado
+        mark = '#000000' if custom and _luma(self.variable.get()) > 0.6 else TEXT
+        self.create_line(x - 5, y, x + 5, y, fill=mark, width=2, capstyle='round')
+        self.create_line(x, y - 5, x, y + 5, fill=mark, width=2, capstyle='round')
+
+
+def _luma(hex_colour):
+    r, g, b = (int(hex_colour[i:i+2], 16) / 255 for i in (1, 3, 5))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
 class Slider(_Canvas):
     """Barra com puxador, clique, arraste, roda do mouse e setas."""
     def __init__(self, parent, variable, lo, hi, gradient=None, step=1):
-        super().__init__(parent, height=30, cursor='hand2', takefocus=True)
+        super().__init__(parent, height=28, cursor='hand2', takefocus=True)
         self.variable, self.lo, self.hi, self.gradient, self.unit = variable, lo, hi, gradient, step
         self.bind('<Configure>', lambda _: self.redraw())
         self.bind('<Button-1>', self.select)
@@ -278,8 +347,7 @@ class Slider(_Canvas):
             self.bind('<' + key + '>', lambda _e, n=amount: self.step(n))
         self.bind('<FocusIn>', lambda _: self.redraw())
         self.bind('<FocusOut>', lambda _: self.redraw())
-        self._trace = variable.trace_add('write', lambda *_: self.redraw())
-        self.bind('<Destroy>', lambda e: e.widget is self and variable.trace_remove('write', self._trace))
+        self.watch(variable)
 
     def set_value(self, value):
         self.variable.set(max(self.lo, min(self.hi, round(value))))
@@ -290,57 +358,56 @@ class Slider(_Canvas):
 
     def select(self, event):
         self.focus_set()
-        span = max(1, self.winfo_width() - 28)
-        self.set_value(self.lo + (self.hi - self.lo) * (event.x - 14) / span)
+        span = max(1, self.winfo_width() - 24)
+        self.set_value(self.lo + (self.hi - self.lo) * (event.x - 12) / span)
 
     def redraw(self):
         self.delete('all')
         w = max(30, self.winfo_width())
-        y = 15
+        y = 14
         frac = (max(self.lo, min(self.hi, self.variable.get())) - self.lo) / (self.hi - self.lo)
-        x = 14 + (w - 28) * frac
+        x = 12 + (w - 24) * frac
         if self.gradient:
             a, b = self.gradient
             pieces = 40
             for i in range(pieces):
-                xa = 14 + (w - 28) * i / pieces
-                xb = 14 + (w - 28) * (i + 1) / pieces
-                self.create_line(xa, y, xb, y, width=8, fill=mix(a, b, i / (pieces - 1)),
+                xa = 12 + (w - 24) * i / pieces
+                xb = 12 + (w - 24) * (i + 1) / pieces
+                self.create_line(xa, y, xb, y, width=6, fill=mix(a, b, i / (pieces - 1)),
                                  capstyle='round' if i in (0, pieces - 1) else 'butt')
         else:
-            self.create_line(14, y, w - 14, y, fill=SURFACE_3, width=8, capstyle='round')
-            self.create_line(14, y, x, y, fill=ACCENT, width=8, capstyle='round')
-        ring = ACCENT if self.has_focus() else SURFACE
-        self.create_oval(x - 12, y - 12, x + 12, y + 12, fill=ring, outline='')
-        self.create_oval(x - 9, y - 9, x + 9, y + 9, fill='#ffffff', outline='')
+            self.create_line(12, y, w - 12, y, fill=SURFACE_3, width=6, capstyle='round')
+            self.create_line(12, y, x, y, fill=ACCENT, width=6, capstyle='round')
+        if self.has_focus():
+            self.create_oval(x - 12, y - 12, x + 12, y + 12, fill=mix(BG, ACCENT, 0.35), outline='')
+        self.create_oval(x - 8, y - 8, x + 8, y + 8, fill='#ffffff', outline='')
 
 
 class Switch(_Canvas):
     """Interruptor ligado/desligado com rótulo clicável."""
     def __init__(self, parent, variable, text):
-        super().__init__(parent, height=26, cursor='hand2', takefocus=True)
+        super().__init__(parent, height=24, cursor='hand2', takefocus=True)
         self.variable, self.text = variable, text
         self.bind('<Configure>', lambda _: self.redraw())
         for seq in ('<Button-1>', '<space>', '<Return>'):
             self.bind(seq, lambda _: self.variable.set(not self.variable.get()))
-        self._trace = variable.trace_add('write', lambda *_: self.redraw())
-        self.bind('<Destroy>', lambda e: e.widget is self and variable.trace_remove('write', self._trace))
+        self.watch(variable)
 
     def redraw(self):
         self.delete('all')
         on = bool(self.variable.get())
         # Trilho em pílula; puxador concêntrico (pílula dentro de pílula).
-        self.create_line(13, 13, 31, 13, width=22, capstyle='round',
+        self.create_line(12, 12, 28, 12, width=20, capstyle='round',
                          fill=ACCENT if on else SURFACE_3)
-        x = 31 if on else 13
-        self.create_oval(x - 8, 5, x + 8, 21, fill='#ffffff' if on else MUTED, outline='')
-        self.create_text(54, 13, anchor='w', text=self.text, fill=TEXT if on else MUTED,
+        x = 28 if on else 12
+        self.create_oval(x - 7, 5, x + 7, 19, fill='#ffffff' if on else MUTED, outline='')
+        self.create_text(50, 12, anchor='w', text=self.text, fill=TEXT_2 if on else MUTED,
                          font=(FONT, 9))
 
 
 def setup_theme(root):
     root.configure(bg=BG)
-    root.minsize(480, 0)  # a altura acompanha o conteúdo de cada modo
+    root.minsize(460, 0)  # a altura acompanha o conteúdo de cada modo
     root.resizable(True, True)
     root.option_add('*Font', (FONT, 10))
     style = ttk.Style(root)
@@ -361,13 +428,40 @@ def setup_theme(root):
 
 TARGETS = [('all', 'Geral'), ('strip', 'Fita'), ('board', 'Placa-mãe'), ('ram', 'Memórias')]
 PC_TARGETS = ('board', 'ram')
-PALETTE = ['#a020f0', '#ff4569', '#ff943b', '#ffdc60', '#40d9a0', '#3d9dff', '#ffffff']
+PALETTE = FAVOURITES[:7]
 RAINBOW = ['#ff4040', '#ffb040', '#f0f040', '#40e080', '#40a0ff', '#b060ff']
+
+
+def section(parent, title, value=None):
+    """Título de seção (e um valor à direita, se houver)."""
+    row = tk.Frame(parent, bg=parent.cget('bg'))
+    row.pack(fill='x', pady=(18, 6))
+    tk.Label(row, text=title, bg=row.cget('bg'), fg=TEXT_2, font=(FONT, 10, 'bold')).pack(side='left')
+    right = None
+    if value is not None:
+        right = tk.Label(row, text=value, bg=row.cget('bg'), fg=TEXT_2, font=(FONT, 10))
+        right.pack(side='right')
+    return right
+
+
+def warning_banner(parent, variable, on_click, wraplength=300):
+    """Aviso curto com ícone desenhado e botão Resolver."""
+    banner = RoundBox(parent, radius=BANNER_R, pad=BANNER_PAD, fill=WARN_BG, outline='#4a3818')
+    mark = _Canvas(banner.body, width=20, height=20)
+    mark.pack(side='left', padx=(4, 8))
+    draw_warning(mark, 1, 1, 18, WARN)
+    tk.Label(banner.body, textvariable=variable, bg=WARN_BG, fg=WARN, wraplength=wraplength,
+             justify='left', font=(FONT, 9)).pack(side='left', fill='x', expand=True)
+    button = PillButton(banner.body, 'Resolver', on_click, radius=BANNER_BTN_R, height=30,
+                        fill=WARN, hover='#ffd28c', fg='#2a1c05', font=(FONT, 9, 'bold'))
+    button.configure(width=84)
+    button.pack(side='right', padx=(8, 0))
+    return banner
 
 
 def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix_conflicts):
     """v: namespace com as variáveis Tk (target, mode, colour, brightness,
-    temperature, effect, speed, pc_sync, power, status, warning)."""
+    temperature, effect, speed, pc_sync, power, status, warning_short)."""
     labels = dict(TARGETS)
     effect_info = {key: (name, colour) for key, name, colour, _ in effects}
     frame.configure(style='TFrame')
@@ -382,88 +476,69 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
     top = tk.Frame(shell, bg=BG)
     top.pack(fill='x')
     icon_label = tk.Label(top, bg=BG)
-    icon_label.pack(side='left', padx=(0, 10))
+    icon_label.pack(side='left', padx=(0, 12))
     titles = tk.Frame(top, bg=BG)
     titles.pack(side='left')
-    label(titles, 'Controle LED', font=(FONT, 18, 'bold')).pack(anchor='w')
+    label(titles, 'Controle LED', font=(DISPLAY, 17, 'bold')).pack(anchor='w')
     label(titles, textvariable=v.power, fg=MUTED, font=(FONT, 9)).pack(anchor='w')
 
-    # Aviso de conflito (aparece só quando há)
-    banner = RoundBox(shell, radius=BANNER_R, pad=BANNER_PAD, fill=WARN_BG, outline='#5a4320')
-    label(banner.body, '⚠', fg=WARN, font=(FONT, 13)).pack(side='left', padx=(2, 8))
-    label(banner.body, textvariable=v.warning, fg=WARN, wraplength=290, justify='left',
-          font=(FONT, 9)).pack(side='left', fill='x', expand=True)
-    fix_button = PillButton(banner.body, 'Resolver', fix_conflicts, radius=BANNER_BTN_R,
-                            height=32, fill=WARN, hover='#ffd28c', fg='#2a1c05',
-                            font=(FONT, 9, 'bold'))
-    fix_button.configure(width=86)
-    fix_button.pack(side='right', padx=(8, 0))
+    banner = warning_banner(shell, v.warning_short, fix_conflicts)
 
     targets = Segmented(shell, v.target, TARGETS)
-    targets.pack(fill='x', pady=(16, 10))
+    targets.pack(fill='x', pady=(18, 10))
 
     power_row = tk.Frame(shell, bg=BG)
     power_row.pack(fill='x')
-    on_button = PillButton(power_row, 'Ligar', lambda: set_power(True))
-    on_button.pack(side='left', expand=True, fill='x', padx=(0, 5))
-    off_button = PillButton(power_row, 'Desligar', lambda: set_power(False))
-    off_button.pack(side='left', expand=True, fill='x', padx=(5, 0))
-    Switch(shell, v.pc_sync, 'Controlar placa-mãe e memórias (OpenRGB)').pack(fill='x', pady=(10, 12))
+    PillButton(power_row, 'Ligar', lambda: set_power(True), height=38).pack(
+        side='left', expand=True, fill='x', padx=(0, 4))
+    PillButton(power_row, 'Desligar', lambda: set_power(False), height=38).pack(
+        side='left', expand=True, fill='x', padx=(4, 0))
+    Switch(shell, v.pc_sync, 'Controlar placa-mãe e memórias (OpenRGB)').pack(fill='x', pady=(12, 0))
 
     Segmented(shell, v.mode, [('colour', 'Cor'), ('white', 'Branco'), ('effect', 'Efeitos')],
-              height=38, font_size=10).pack(fill='x', pady=(0, 10))
+              height=36).pack(fill='x', pady=(18, 10))
 
-    preview = _Canvas(shell, height=96, cursor='hand2')
+    preview = _Canvas(shell, height=92, cursor='hand2')
     preview.pack(fill='x')
     preview.bind('<Button-1>', lambda _: pick())
     preview.bind('<Configure>', lambda _: update())
 
-    tools = RoundBox(shell)
-    tools.pack(fill='x', pady=(10, 0))
-    effect_tools = tk.Frame(tools.body, bg=SURFACE)
-    label(effect_tools, 'Efeito', fg=MUTED, font=(FONT, 9)).pack(anchor='w', pady=(0, 6))
+    tools = tk.Frame(shell, bg=BG)
+    tools.pack(fill='x')
+    effect_tools = tk.Frame(tools, bg=BG)
+    section(effect_tools, 'Efeito')
     ChipGrid(effect_tools, v.effect, [(key, name) for key, name, *_ in effects]).pack(fill='x')
-    speed_row = tk.Frame(effect_tools, bg=SURFACE)
-    speed_row.pack(fill='x', pady=(10, 0))
-    label(speed_row, 'Velocidade', fg=MUTED, font=(FONT, 9)).pack(side='left', padx=(0, 10))
-    ChipGrid(speed_row, v.speed, speeds, columns=3, chip_h=30).pack(side='left', expand=True, fill='x')
+    section(effect_tools, 'Velocidade')
+    ChipGrid(effect_tools, v.speed, speeds, columns=3, chip_h=30).pack(fill='x')
 
-    colour_tools = tk.Frame(tools.body, bg=SURFACE)
-    label(colour_tools, 'Cor', fg=MUTED, font=(FONT, 9)).pack(anchor='w', pady=(0, 4))
+    colour_tools = tk.Frame(tools, bg=BG)
+    section(colour_tools, 'Cor')
     Swatches(colour_tools, v.colour, PALETTE, pick).pack(fill='x')
 
-    white_tools = tk.Frame(tools.body, bg=SURFACE)
-    white_title = tk.Frame(white_tools, bg=SURFACE)
-    white_title.pack(fill='x')
-    label(white_title, 'Temperatura do branco', fg=MUTED, font=(FONT, 9)).pack(side='left')
-    temperature_label = label(white_title, '', font=(FONT, 9, 'bold'))
-    temperature_label.pack(side='right')
-    Slider(white_tools, v.temperature, 0, 1000, gradient=('#ffba6b', '#cde4ff'), step=25).pack(fill='x', pady=(4, 0))
-    ends = tk.Frame(white_tools, bg=SURFACE)
+    white_tools = tk.Frame(tools, bg=BG)
+    temperature_label = section(white_tools, 'Temperatura', '')
+    Slider(white_tools, v.temperature, 0, 1000, gradient=('#ffba6b', '#cde4ff'), step=25).pack(fill='x')
+    ends = tk.Frame(white_tools, bg=BG)
     ends.pack(fill='x')
     label(ends, 'Quente', fg=MUTED, font=(FONT, 8)).pack(side='left')
     label(ends, 'Frio', fg=MUTED, font=(FONT, 8)).pack(side='right')
 
-    bright = RoundBox(shell)
-    bright.pack(fill='x', pady=(10, 0))
-    line = tk.Frame(bright.body, bg=SURFACE)
-    line.pack(fill='x')
-    label(line, 'Brilho', fg=MUTED, font=(FONT, 9)).pack(side='left')
-    percent = label(line, '', font=(FONT, 9, 'bold'))
-    percent.pack(side='right')
-    Slider(bright.body, v.brightness, 1, 100, step=5).pack(fill='x', pady=(4, 0))
+    percent = section(shell, 'Brilho', '')
+    Slider(shell, v.brightness, 1, 100, step=5).pack(fill='x')
 
-    action = PillButton(shell, '', apply_selection, radius=14, height=50, fill=ACCENT,
-                        hover=ACCENT_HOVER, fg=ACCENT_TEXT, font=(FONT, 12, 'bold'))
-    action.pack(fill='x', pady=(14, 4))
+    action = PillButton(shell, '', apply_selection, radius=12, height=48, fill=ACCENT,
+                        hover=ACCENT_HOVER, fg=ACCENT_TEXT, font=(FONT, 11, 'bold'))
+    action.pack(fill='x', pady=(22, 0))
 
     footer = tk.Frame(shell, bg=BG)
-    footer.pack(side='bottom', fill='x', pady=(8, 0))
-    tk.Label(footer, textvariable=v.status, bg=BG, fg=MUTED, wraplength=440,
+    footer.pack(side='bottom', fill='x', pady=(14, 0))
+    tk.Label(footer, textvariable=v.status, bg=BG, fg=MUTED, wraplength=420,
              justify='left', anchor='w', font=(FONT, 9)).pack(fill='x')
-    brand = tk.Label(footer, text='Feito por System Bee Solutions ↗', bg=BG,
-                     fg=ACCENT, cursor='hand2', takefocus=True, font=(FONT, 9), pady=6)
-    brand.pack(anchor='w', pady=(2, 0))
+    brand = tk.Label(footer, text='System Bee Solutions ↗', bg=BG, fg=MUTED,
+                     cursor='hand2', takefocus=True, font=(FONT, 8), pady=4)
+    brand.pack(anchor='w', pady=(4, 0))
+    brand.bind('<Enter>', lambda _: brand.configure(fg=ACCENT))
+    brand.bind('<Leave>', lambda _: brand.configure(fg=MUTED))
     for sequence in ('<Button-1>', '<Return>', '<space>'):
         brand.bind(sequence, lambda _: webbrowser.open('https://systembee.com.br/'))
 
@@ -471,13 +546,13 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
         preview.delete('all')
         w, h = preview.winfo_width(), preview.winfo_height()
         preview.shape(0, 0, w - 1, h - 1, CARD_R, fill=SURFACE)
-        cx, cy, r = 62, h / 2, 26
+        cx, cy, r = 52, h / 2, 22
         rainbow = mode == 'effect' and not effect_colour
         glow = mix(RAINBOW[0], RAINBOW[4], 0.5) if rainbow else colour
-        for i in range(7, 0, -1):  # halo
+        for i in range(6, 0, -1):  # halo
             rr = r + i * 3
             preview.create_oval(cx - rr, cy - rr, cx + rr, cy + rr, outline='',
-                                fill=mix(SURFACE, glow, 0.04 + (7 - i) * 0.045))
+                                fill=mix(SURFACE, glow, 0.03 + (6 - i) * 0.05))
         if rainbow:
             step = 360 / len(RAINBOW)
             for i, c in enumerate(RAINBOW):
@@ -485,15 +560,18 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
                                    extent=step, fill=c, outline=c, style='pieslice')
         else:
             preview.create_oval(cx - r, cy - r, cx + r, cy + r, fill=colour, outline='')
-        preview.create_oval(cx - 14, cy - 17, cx - 2, cy - 9, fill=mix(glow, '#ffffff', 0.6), outline='')
-        title = ('Branco' if mode == 'white' else effect_name if mode == 'effect' else colour.upper())
-        detail = (f'{colour.upper()} · ' if mode == 'effect' and effect_colour else '')
-        hint = ('Ajuste a temperatura abaixo' if mode == 'white' else
-                'Efeito com cores próprias' if rainbow else 'Clique para escolher outra cor')
-        x = cx + r + 34
-        preview.create_text(x, cy - 24, anchor='w', text=f'PRÉVIA · {where.upper()}', fill=MUTED, font=(FONT, 8))
-        preview.create_text(x, cy, anchor='w', text=title, fill=TEXT, font=(FONT, 16, 'bold'))
-        preview.create_text(x, cy + 24, anchor='w', fill=MUTED, font=(FONT, 9), text=detail + hint)
+        name = name_for(colour)
+        if mode == 'white':
+            title, detail = 'Branco', 'Ajuste a temperatura abaixo'
+        elif mode == 'effect':
+            title = effect_name
+            detail = 'Cores próprias do efeito' if rainbow else (name or colour.upper())
+        else:
+            title = name or colour.upper()
+            detail = colour.upper() + ' · clique para mais cores' if name else 'Clique para mais cores'
+        x = cx + r + 30
+        preview.create_text(x, cy - 10, anchor='w', text=title, fill=TEXT, font=(DISPLAY, 15, 'bold'))
+        preview.create_text(x, cy + 14, anchor='w', fill=MUTED, font=(FONT, 9), text=detail)
 
     def update(*_):
         if not v.pc_sync.get() and v.target.get() in PC_TARGETS:
@@ -512,22 +590,20 @@ def build_panel(frame, v, pick, apply_selection, set_power, effects, speeds, fix
         if mode == 'white':
             white_tools.pack(fill='x')
         elif mode == 'colour' or effect_colour:
-            colour_tools.pack(fill='x', pady=(12, 0) if mode == 'effect' else 0)
-        on_button.set_text(f'Ligar · {where}')
-        off_button.set_text(f'Desligar · {where}')
+            colour_tools.pack(fill='x')
         action.set_text(f'Aplicar em {where}')
         colour = white_preview(v.temperature.get()) if mode == 'white' else v.colour.get()
         draw_preview(where, mode, colour, effect_name, effect_colour)
 
     def update_warning(*_):
-        if v.warning.get():
-            banner.pack(fill='x', pady=(14, 0), after=top)
+        if v.warning_short.get():
+            banner.pack(fill='x', pady=(16, 0), after=top)
         else:
             banner.pack_forget()
 
     for variable in (v.target, v.mode, v.colour, v.brightness, v.temperature, v.effect, v.pc_sync):
         variable.trace_add('write', update)
-    v.warning.trace_add('write', update_warning)
+    v.warning_short.trace_add('write', update_warning)
     update()
     update_warning()
 

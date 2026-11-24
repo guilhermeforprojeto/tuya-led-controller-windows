@@ -6,7 +6,7 @@ from tkinter import ttk
 from automation import (ACTIONS, WHEN, DAY_NAMES, describe_days, describe_selection,
                         new_id, valid_time)
 from conflicts import KNOWN_NAMES
-from interface import (BG, SURFACE, SURFACE_2, SURFACE_3, TEXT, MUTED, ACCENT, ACCENT_HOVER,
+from interface import (BG, SURFACE, SURFACE_2, SURFACE_3, TEXT, MUTED, ACCENT, ACCENT_HOVER, ACCENT_SOFT,
                        ACCENT_TEXT, WARN, WARN_BG, FONT, CHIP_R, RoundBox, PillButton,
                        Switch, ChipGrid, _Canvas, mix)
 
@@ -24,6 +24,39 @@ def _small(parent, text, command, fill=SURFACE_3, fg=TEXT, width=96):
                    hover=mix(fill, '#ffffff', 0.12), fg=fg, font=(FONT, 9, 'bold'))
     b.configure(width=width)
     return b
+
+
+class DayChips(_Canvas):
+    """Dias da semana (vários ao mesmo tempo); escolhido = destaque com texto claro."""
+    def __init__(self, parent, variables, height=30, gap=4):
+        super().__init__(parent, height=height, cursor='hand2')
+        self.variables, self.gap = variables, gap
+        self.bind('<Configure>', lambda _: self.redraw())
+        self.bind('<Button-1>', self._click)
+        for var in variables:
+            self.watch(var)
+
+    def _cell(self, i):
+        n = len(self.variables)
+        w = (self.winfo_width() - (n - 1) * self.gap) / n
+        return i * (w + self.gap), i * (w + self.gap) + w
+
+    def _click(self, event):
+        for i, var in enumerate(self.variables):
+            x0, x1 = self._cell(i)
+            if x0 <= event.x <= x1:
+                var.set(not var.get())
+
+    def redraw(self):
+        self.delete('all')
+        h = self.winfo_height()
+        for i, (name, var) in enumerate(zip(DAY_NAMES, self.variables)):
+            x0, x1 = self._cell(i)
+            on = var.get()
+            self.shape(x0, 0, x1, h - 1, CHIP_R,
+                       fill=mix(self.cget('bg'), ACCENT, 0.3) if on else SURFACE_3)
+            self.create_text((x0 + x1) / 2, h / 2, text=name, fill=ACCENT_SOFT if on else MUTED,
+                             font=(FONT, 9, 'bold' if on else 'normal'))
 
 
 class ScrollArea(tk.Frame):
@@ -240,15 +273,9 @@ class AutomationWindow:
                  relief='flat', font=(FONT, 11), justify='center').pack(side='left', padx=8, ipady=4)
         _label(row, '(HH:MM)', fg=MUTED).pack(side='left')
         days = [tk.BooleanVar(value=True) for _ in DAY_NAMES]
-        drow = tk.Frame(f, bg=SURFACE_2)
-        drow.pack(fill='x', pady=(10, 0))
-        for name, var in zip(DAY_NAMES, days):
-            tk.Checkbutton(drow, text=name, variable=var, indicatoron=False, bg=SURFACE_3, fg=MUTED,
-                           selectcolor=mix(SURFACE, ACCENT, 0.5), activebackground=SURFACE_3,
-                           activeforeground=TEXT, relief='flat', bd=0, padx=8, pady=5,
-                           cursor='hand2', font=(FONT, 9)).pack(side='left', expand=True, fill='x', padx=1)
+        DayChips(f, days).pack(fill='x', pady=(10, 0))
         action = tk.StringVar(value='apply')
-        ChipGrid(f, action, ACTIONS, columns=3, chip_h=30, chip_fill=SURFACE_3).pack(fill='x', pady=(10, 0))
+        ChipGrid(f, action, ACTIONS, columns=3, chip_h=30, chip_fill=SURFACE_3, radius=CHIP_R).pack(fill='x', pady=(10, 0))
         msg = tk.StringVar()
 
         def add():
@@ -291,7 +318,7 @@ class AutomationWindow:
         reload()
         _small(row, 'Atualizar', reload, width=90).pack(side='left', padx=(6, 0))
         when = tk.StringVar(value='open')
-        ChipGrid(f, when, WHEN, columns=2, chip_h=30, chip_fill=SURFACE_3).pack(fill='x', pady=(10, 0))
+        ChipGrid(f, when, WHEN, columns=2, chip_h=30, chip_fill=SURFACE_3, radius=CHIP_R).pack(fill='x', pady=(10, 0))
         msg = tk.StringVar()
 
         def add():

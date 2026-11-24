@@ -15,7 +15,9 @@ Projeto independente, sem vínculo oficial com Tuya, ASUS, OpenRGB ou Google. Os
 
 ## Interface
 
-Tema escuro com cards de cantos contínuos (squircle) e raios concêntricos, prévia com o brilho da cor escolhida, paleta em círculos, barras de brilho e temperatura (clique, arraste, roda do mouse ou setas) e botão de aplicar destacado. O ícone da bandeja, da janela e do executável mostra um LED na cor atual. O rodapé inclui o crédito clicável da System Bee Solutions. A tela principal concentra os ajustes de iluminação. **Arquivo** reúne minimizar para a bandeja e sair; **Opções** reúne configurações e atualização do estado. A prévia é ilustrativa; a aparência física depende da fita.
+Tema escuro e limpo: poucas superfícies, seções separadas por espaço e título, fonte Segoe UI Variable (Windows 11), cantos contínuos (squircle) e raios concêntricos. A prévia mostra o nome e o brilho da cor; barras de brilho e temperatura aceitam clique, arraste, roda do mouse e setas. O ícone da bandeja, da janela e do executável mostra um LED na cor atual.
+
+**Seletor de cores:** abas **Vivas** (cores puras, as mais fiéis no LED), **Aconchego**, **Foco**, **Pantone** (cores do ano de 2017 a 2026, aproximadas em HEX) e **Livre** (campo de matiz × intensidade e código HEX), com as cores **recentes**. Clique duplo usa a cor na hora. No LED o brilho é ajustado à parte, então tons escuros aparecem mais vivos.
 
 ## Recursos
 
