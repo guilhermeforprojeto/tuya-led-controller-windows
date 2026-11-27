@@ -75,6 +75,30 @@ class PcRgbTests(unittest.TestCase):
             self.assertEqual(self.last_colours(d), [(255, 0, 0)] * 5)
         self.devs[0].set_mode.assert_not_called()
 
+    def test_restore_redetects_missing_ram_and_refreshes_device_indices(self):
+        self.client.devices = [self.devs[0]]
+        board = device(1, 0, 'ASUS TUF B550M-PLUS')
+        stick = device(0, 1, 'ENE DRAM', address='0x70')
+        recovered = SimpleNamespace(devices=[stick, board], disconnect=Mock())
+        self.factory.side_effect = [self.client, recovered]
+        self.pc.ram.restore({'0x70': {'sel': {'mode': 'colour', 'colour': '#ff0000'}}})
+        self.pc.apply('#ffffff', 100, (0,))
+        with patch('pc_rgb.rescan_openrgb') as rescan:
+            self.pc.ram._send(0, scan=self.pc.ram._scan_on_restore)
+        rescan.assert_called_once_with('127.0.0.1', 6742)
+        self.client.disconnect.assert_called_once()
+        self.assertEqual(self.last_colours(stick), [(255, 0, 0)] * 5)
+        self.pc.apply('#ffffff', 100, (0,))
+        board.set_mode.assert_called_once()
+        board.set_color.assert_called_once_with((255, 255, 255), fast=True)
+
+    def test_restore_does_not_redetect_when_ram_is_available(self):
+        self.pc.ram.restore({'0x70': {'sel': {'mode': 'colour', 'colour': '#ff0000'}}})
+        with patch('pc_rgb.rescan_openrgb') as rescan:
+            self.pc.ram._send(0, scan=self.pc.ram._scan_on_restore)
+        rescan.assert_not_called()
+        self.assertEqual(self.last_colours(self.devs[3]), [(255, 0, 0)] * 5)
+
     def test_only_selected_sticks_change(self):
         red = {'mode': 'colour', 'colour': '#ff0000', 'brightness': 100}
         blue = {'mode': 'colour', 'colour': '#0000ff', 'brightness': 100}

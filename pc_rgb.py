@@ -7,6 +7,8 @@ placas ASUS B550 e memórias DDR4 RGB (ex.: ADATA XPG Spectrix).
 import copy
 import os
 import re
+import socket
+import struct
 import subprocess
 import threading
 import time
@@ -25,6 +27,10 @@ OPENRGB_DIRS = [r'D:\Program Files\OpenRGB', r'C:\Program Files\OpenRGB',
 
 WARM = (255, 186, 107)
 COLD = (205, 228, 255)
+SDK_HEADER = struct.Struct('<4sIII')
+SDK_VERSION = 40
+SDK_RESCAN = 140
+SDK_DETECTION_COMPLETE = 103
 
 
 def hex_to_rgb(hex_colour):
@@ -55,6 +61,35 @@ def launch_openrgb(exe):
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'DETACHED_PROCESS', 0)
     subprocess.Popen([exe, '--server', '--startminimized'], cwd=str(Path(exe).parent),
                      creationflags=flags, close_fds=True)
+
+
+def rescan_openrgb(host, port):
+    """Pede nova detecção e espera a conclusão via SDK 6 do OpenRGB."""
+    # O openrgb-python usa SDK 4. Negocia SDK 6 numa conexão separada
+    # para receber o evento de conclusão, pois a lista é zerada ao iniciar.
+    deadline = time.monotonic() + 8
+    with socket.create_connection((host, port), timeout=2) as connection:
+        with connection.makefile('rb') as stream:
+            def receive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('OpenRGB não concluiu a detecção.')
+                connection.settimeout(remaining)
+                header = stream.read(SDK_HEADER.size)
+                if len(header) != SDK_HEADER.size:
+                    raise OSError('OpenRGB encerrou a detecção.')
+                magic, _, kind, size = SDK_HEADER.unpack(header)
+                if magic != b'ORGB' or size > 65536:
+                    raise OSError('Resposta inválida do OpenRGB.')
+                return kind, stream.read(size)
+
+            connection.sendall(SDK_HEADER.pack(b'ORGB', 0, SDK_VERSION, 4) + struct.pack('<I', 6))
+            kind, data = receive()
+            if kind != SDK_VERSION or len(data) != 4 or struct.unpack('<I', data)[0] < 6:
+                return
+            connection.sendall(SDK_HEADER.pack(b'ORGB', 0, SDK_RESCAN, 0))
+            while receive()[0] != SDK_DETECTION_COMPLETE:
+                pass
 
 
 def scale(rgb, brightness):
@@ -297,6 +332,7 @@ class RamAnimator:
         self._stop = False
         self._error_until = 0
         self._thread = None
+        self._scan_on_restore = False
 
     # ---- estado
     def addresses(self):
@@ -366,6 +402,7 @@ class RamAnimator:
             self.sticks = {a: {'sel': dict(s.get('sel') or {}), 'on': bool(s.get('on', True)),
                                'group': int(s.get('group', 0))} for a, s in (data or {}).items()}
             self._group = max([s['group'] for s in self.sticks.values()] + [0])
+            self._scan_on_restore = bool(self.sticks)
             self._touch()
 
     autostart = True  # testes desligam o laço e chamam _send direto
@@ -421,17 +458,31 @@ class RamAnimator:
                 time.sleep(0.5)
                 continue
             try:
-                self._send(time.time())
+                with self._cond:
+                    scan = self._scan_on_restore
+                    self._scan_on_restore = False
+                self._send(time.time(), scan)
             except Exception:
                 self._error_until = time.time() + 3  # OpenRGB fora: tenta de novo depois
                 self._dirty = True
             time.sleep(1 / self.FPS)
 
-    def _send(self, t):
+    def _send(self, t, scan=False):
         colour_cls = self.pc._colour_class()
 
         def action(client):
-            devices = {stick_address(d): d for d in self.pc._targets(client, (1,))}
+            nonlocal scan
+            sticks = self.pc._targets(client, (1,))
+            if scan and not sticks:
+                scan = False
+                # A redetecção pode mudar os índices do SDK, inclusive o da placa.
+                self.pc._disconnect()
+                try:
+                    rescan_openrgb(self.pc.host, self.pc.port)
+                except OSError:
+                    pass
+                sticks = self.pc._targets(self.pc._connect(), (1,))
+            devices = {stick_address(d): d for d in sticks}
             ordered = self.order_known(list(devices))
             with self._cond:
                 frame_colours = self.colours(t, ordered)
