@@ -5,16 +5,17 @@ Só um programa pode controlar os LEDs por vez. Qualquer outro software de RGB
 cima, e o resultado são memórias e placa com cores diferentes das escolhidas.
 Aqui ficam o catálogo desses programas, a detecção e as correções.
 """
+import base64
 import fnmatch
 import os
 import re
 import subprocess
-import time
 from pathlib import Path
 
 OPENRGB_SERVICE = 'OpenRGB'
 SDK_PORT = 6742
 DISABLED = 4  # tipo de início "desativado" no Windows
+ASUS_HELPERS = {'armourysocketserver.exe', 'armouryhtmldebugserver.exe'}
 
 GENERIC_STEPS = [
     'Feche o programa (inclusive o ícone perto do relógio).',
@@ -27,12 +28,11 @@ GENERIC_STEPS = [
 SOFTWARE = [
     dict(key='asus', name='ASUS Armoury Crate / Aura Sync',
          services=['LightingService', 'ArmouryCrateService', 'ArmouryCrateControlInterface'],
-         processes=['aac*hal*.exe', 'lightingservice.exe', 'armourycrate*.exe',
-                    'armourysocketserver.exe', 'armouryhtmldebugserver.exe', 'auracreator*.exe'],
+         processes=['aac*hal*.exe', 'lightingservice.exe', 'armourycrate*.exe', 'auracreator*.exe'],
          installed=r'\baura\b|armoury crate|aura creator', store=['armourycrate'],
          # Componentes que só rodam quando o Armoury Crate/LightingService os chama.
          leftovers=r'aura (dram|motherboard|extension card)|\bhal\b',
-         steps=['Clique em Parar agora: interrompe o Aura na hora (vale até reiniciar).',
+         steps=['Para interromper o Aura, clique em Parar como administrador.',
                 'Clique em Remover todos: desinstala os componentes "AURA" listados abaixo. Eles '
                 'ficam ocultos em Configurações → Aplicativos, por isso só dá para remover por aqui.',
                 'Se o Armoury Crate da Microsoft Store aparecer na lista, desinstale-o em Aplicativos.',
@@ -126,6 +126,7 @@ def analyse(procs, service_lookup, installed, store, openrgb_pids, openrgb_servi
     for soft in SOFTWARE:
         running = sorted(p for p in procs
                          if any(fnmatch.fnmatch(p, pat) for pat in soft.get('processes', [])))
+        helpers = sorted(ASUS_HELPERS.intersection(procs)) if soft['key'] == 'asus' else []
         services = []
         for name in soft.get('services', []):
             st = service_lookup(name)
@@ -135,17 +136,23 @@ def analyse(procs, service_lookup, installed, store, openrgb_pids, openrgb_servi
         programs = [(n, c) for n, c in installed if pattern and re.search(pattern, n, re.I)]
         packages = [p for p in store
                     if any(s in p.lower() for s in soft.get('store', []))]
-        if running or services or programs or packages:
+        if running or helpers or services or programs or packages:
             active = bool(running or any(r for _, r in services))
             rest = soft.get('leftovers')
             only_leftovers = (not running and not services and not packages and rest and
                               all(re.search(rest, n, re.I) for n, _ in programs))
+            if active:
+                severity = 'active'
+            elif only_leftovers:
+                severity = 'auxiliary' if helpers else 'leftover'
+            else:
+                severity = 'installed'
             findings.append(dict(
-                key=soft['key'], name=soft['name'], running=running, services=services,
+                key=soft['key'], name=soft['name'], running=running + helpers, services=services,
                 installed=programs, store=packages, active=active,
                 # active: mexe nos LEDs agora; installed: pode iniciar sozinho;
                 # leftover: só componentes ocultos, sem o app que os chama (inofensivo).
-                severity='active' if active else 'leftover' if only_leftovers else 'installed',
+                severity=severity,
                 steps=soft.get('steps', GENERIC_STEPS), help_url=soft.get('help_url')))
     if len(openrgb_pids) > 1 or (shortcuts and openrgb_service is not None):
         findings.append(dict(
@@ -153,7 +160,7 @@ def analyse(procs, service_lookup, installed, store, openrgb_pids, openrgb_servi
             services=[], installed=[], store=[], active=True, severity='active',
             shortcuts=list(shortcuts),
             steps=['O OpenRGB já roda como serviço; a cópia extra (atalho na pasta '
-                   'Inicializar) disputa os LEDs.', 'Clique em Parar agora: o atalho vai para '
+                   'Inicializar) disputa os LEDs.', 'Ao parar como administrador, o atalho vai para '
                    'um backup e a cópia extra é fechada.'], help_url=None))
     return findings
 
@@ -163,13 +170,21 @@ def find_conflicts():
     procs = processes()
     names = {n.lower() for n in procs.values()}
     openrgb = [pid for pid, n in procs.items() if n.lower() == 'openrgb.exe']
-    return analyse(names, service_state, installed_programs(), store_apps(),
-                   openrgb, service_state(OPENRGB_SERVICE), openrgb_shortcuts())
+    findings = analyse(names, service_state, installed_programs(), store_apps(),
+                       openrgb, service_state(OPENRGB_SERVICE), openrgb_shortcuts())
+    for finding in findings:
+        finding['process_ids'] = [(pid, name) for pid, name in sorted(procs.items())
+                                  if name.lower() in finding['running']]
+    return findings
 
 
 def alerts(findings):
     """Só o que pode mudar as cores: restos inativos não geram aviso."""
-    return [f for f in findings if f.get('severity') != 'leftover']
+    return [f for f in findings if f.get('severity') not in ('leftover', 'auxiliary')]
+
+
+def stoppable(findings):
+    return [f for f in findings if f['active'] or f['running']]
 
 
 def summary(findings):
@@ -186,24 +201,29 @@ def _ps_quote(text):
     return "'" + str(text).replace("'", "''") + "'"
 
 
-def stop_script(findings, backup_dir):
+def stop_script(findings, backup_dir, disable_services=False):
     """PowerShell que para tudo o que interfere agora (sem desinstalar)."""
     lines = ["$ErrorActionPreference = 'SilentlyContinue'"]
     for f in findings:
-        for name, _ in f['services']:
-            lines.append(f'Stop-Service -Name {_ps_quote(name)} -Force')
-            lines.append(f'Set-Service -Name {_ps_quote(name)} -StartupType Disabled')
-        for proc in sorted(set(f['running'])):
-            if proc != 'openrgb.exe':
-                lines.append(f'Stop-Process -Name {_ps_quote(proc[:-4])} -Force')
+        for name, running in f['services']:
+            if running:
+                lines.append(f'Stop-Service -Name {_ps_quote(name)} -Force')
+            if disable_services:
+                lines.append(f'Set-Service -Name {_ps_quote(name)} -StartupType Disabled')
+        for pid, proc in f.get('process_ids', ()):
+            if proc.lower() != 'openrgb.exe':
+                lines.append(f'Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue | '
+                             f'Where-Object {{ $_.ProcessName -eq {_ps_quote(proc[:-4])} }} | '
+                             'Stop-Process -Force')
         for path in f.get('shortcuts', []):
             lines.append(f'New-Item -ItemType Directory -Force -Path {_ps_quote(backup_dir)} | Out-Null')
             lines.append(f'Move-Item -LiteralPath {_ps_quote(path)} -Destination {_ps_quote(backup_dir)} -Force')
     # Mantém só o OpenRGB que serve a porta do SDK; fecha cópias extras.
-    lines += [f'$server = (Get-NetTCPConnection -LocalPort {SDK_PORT} -State Listen | '
-              'Select-Object -First 1).OwningProcess',
-              'if ($server) { Get-Process OpenRGB | Where-Object { $_.Id -ne $server } | '
-              'Stop-Process -Force }']
+    if any(f['key'] == 'openrgb' for f in findings):
+        lines += [f'$server = (Get-NetTCPConnection -LocalPort {SDK_PORT} -State Listen | '
+                  'Select-Object -First 1).OwningProcess',
+                  'if ($server) { Get-Process OpenRGB | Where-Object { $_.Id -ne $server } | '
+                  'Stop-Process -Force }']
     return '\r\n'.join(lines) + '\r\n'
 
 
@@ -212,6 +232,7 @@ def _run_elevated(file, params):
     import pywintypes
     import win32con
     import win32event
+    import win32process
     from win32com.shell import shell, shellcon
     try:
         info = shell.ShellExecuteEx(fMask=shellcon.SEE_MASK_NOCLOSEPROCESS, lpVerb='runas',
@@ -220,22 +241,35 @@ def _run_elevated(file, params):
         if exc.winerror == 1223:
             return False
         raise RuntimeError(f'Não foi possível executar: {exc.strerror}') from None
-    win32event.WaitForSingleObject(info['hProcess'], 10 * 60 * 1000)
-    time.sleep(1)
+    handle = info['hProcess']
+    try:
+        if win32event.WaitForSingleObject(handle, 10 * 60 * 1000) != win32event.WAIT_OBJECT_0:
+            raise RuntimeError('O Windows ainda está executando a ação. Verifique de novo em instantes.')
+        code = win32process.GetExitCodeProcess(handle)
+        if code:
+            raise RuntimeError(f'A ação administrativa terminou com o código {code}.')
+    finally:
+        handle.Close()
     return True
 
 
 def stop_now(findings, folder):
-    folder = Path(folder)
-    script = folder / 'parar-programas-rgb.ps1'
-    script.write_text(stop_script(findings, folder / 'backup-inicializar'), encoding='utf-8-sig')
-    return _run_elevated('powershell.exe',
-                         f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"')
+    import win32api
+    executable = Path(win32api.GetSystemDirectory()) / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe'
+    script = stop_script(findings, Path(folder) / 'backup-inicializar')
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    if not _run_elevated(str(executable), f'-NoProfile -NonInteractive -EncodedCommand {encoded}'):
+        return False
+    keys = {f['key'] for f in findings}
+    remaining = [f['name'] for f in stoppable(find_conflicts()) if f['key'] in keys]
+    if remaining:
+        raise RuntimeError('O Windows ainda detecta ' + ', '.join(remaining) + '.')
+    return True
 
 
 def remove_script(commands, findings=(), backup_dir='', log_path=''):
     """PowerShell que para os programas e roda cada desinstalação, uma por vez."""
-    lines = stop_script(findings, backup_dir).splitlines() if findings else [
+    lines = stop_script(findings, backup_dir, disable_services=True).splitlines() if findings else [
         "$ErrorActionPreference = 'SilentlyContinue'"]
     lines.append(f'$log = {_ps_quote(log_path)}' if log_path else '$log = $null')
     lines.append("if ($log) { Add-Content -Path $log -Value ('--- ' + (Get-Date)) }")

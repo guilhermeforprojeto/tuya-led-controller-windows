@@ -104,7 +104,7 @@ def main():
     from PIL import ImageTk
     from icon_art import draw_icon, icon_for
     from conflicts import (find_conflicts, stop_now, remove_programs, open_apps_settings,
-                           alerts as conflict_alerts)
+                           alerts as conflict_alerts, stoppable)
     from dialogs import ConflictsWindow, AutomationWindow
     from flyout import TrayFlyout, tray_icon_class
     from dialogs import StickOrderWindow
@@ -421,11 +421,11 @@ def main():
                     if error:
                         set_conflict_status(error)
                         log('Parar programas: ' + error)
-                    elif value:
-                        log('Programas de RGB parados; reaplicando as cores do PC.')
-                        set_conflict_status('Programas parados e cores reaplicadas. Para não '
-                                            'voltarem ao reiniciar, desinstale-os.')
-                        reapply_pc()
+                    elif value[0]:
+                        log('O Windows confirmou que os processos e serviços selecionados pararam.')
+                        set_conflict_status('Processos e serviços verificados após a ação.')
+                        if value[1]:
+                            reapply_pc()
                     else:
                         set_conflict_status('Cancelado no pedido de permissão.')
                     check_conflicts()
@@ -604,8 +604,8 @@ def main():
         serious = conflict_alerts(found)
         new = [f for f in serious if f['key'] not in state['notified']]
         if new:
-            log('Interferindo nos LEDs: ' + ', '.join(f['name'] for f in serious))
-            notify('Programas interferindo nos LEDs',
+            log('Possíveis conflitos de iluminação: ' + ', '.join(f['name'] for f in serious))
+            notify('Possíveis conflitos de iluminação',
                    ', '.join(f['name'] for f in new) + '. Abra o Controle LED e clique em Resolver.')
         if state['alerts'] and not serious:
             log('Nenhum programa interferindo nos LEDs.')
@@ -613,9 +613,9 @@ def main():
         state['conflicts'] = found
         state['alerts'] = serious
         if len(serious) == 1:
-            v.warning_short.set(f"{serious[0]['name']} está mudando as cores dos LEDs.")
+            v.warning_short.set(f"Possível conflito de iluminação com {serious[0]['name']}.")
         elif serious:
-            v.warning_short.set(f'{len(serious)} programas estão mudando as cores dos LEDs.')
+            v.warning_short.set(f'{len(serious)} programas podem interferir na iluminação.')
         else:
             v.warning_short.set('')
         win = state['conflict_win']
@@ -648,16 +648,16 @@ def main():
     def stop_conflicts():
         if state['fixing']:
             return
-        if not any(f['active'] for f in state['conflicts']):
-            return set_conflict_status('Nada rodando para parar: nenhum serviço ou processo de '
-                                       'RGB está ativo agora.')
+        found = stoppable(state['conflicts'])
+        if not found:
+            return set_conflict_status('Nenhum processo ou serviço ativo para parar.')
         state['fixing'] = True
         set_conflict_status('Parando os programas… confirme o pedido de permissão do Windows.')
-        found = list(state['conflicts'])
 
         def run():
             try:
-                results.put(('fixed', stop_now(found, folder), None))
+                stopped = stop_now(found, folder)
+                results.put(('fixed', (stopped, any(f['active'] for f in found)), None))
             except Exception as exc:
                 results.put(('fixed', None, str(exc)))
         threading.Thread(target=run, daemon=True).start()

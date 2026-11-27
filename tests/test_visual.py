@@ -1,5 +1,8 @@
+import base64
 import sys, unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from shapes import concentric, squircle_points
 from conflicts import analyse, stop_script, summary, DISABLED
@@ -77,6 +80,17 @@ class ConflictTests(unittest.TestCase):
                                  installed=[('AURA DRAM Component', 'x')])
         self.assertEqual(found[0]['severity'], 'active')
 
+    def test_asus_helpers_are_visible_without_a_conflict_warning(self):
+        from conflicts import alerts, stoppable
+        processes = {'armourysocketserver.exe', 'armouryhtmldebugserver.exe'}
+        found = self.run_analyse(procs=processes, installed=[('AURA DRAM Component', 'x')])
+        self.assertEqual(found[0]['severity'], 'auxiliary')
+        self.assertEqual(set(found[0]['running']), processes)
+        self.assertEqual(alerts(found), [])
+        self.assertEqual(stoppable(found), found)
+        active = self.run_analyse(procs=processes | {'lightingservice.exe'})
+        self.assertEqual(alerts(active)[0]['severity'], 'active')
+
     def test_removal_runs_msi_before_bundle(self):
         from conflicts import removal_order
         self.assertEqual(removal_order(['"b.exe" /uninstall /quiet', 'MsiExec.exe /X{A} /qb']),
@@ -95,11 +109,40 @@ class ConflictTests(unittest.TestCase):
     def test_stop_script(self):
         found = self.run_analyse(procs={'aac3572mbhal_x86.exe'},
                                  services={'LightingService': (True, 2)}, pids=(1, 2))
+        found[0]['process_ids'] = [(31, 'Aac3572MbHal_x86.exe')]
         text = stop_script(found, r"C:\b")
-        self.assertIn("Set-Service -Name 'LightingService' -StartupType Disabled", text)
-        self.assertIn("Stop-Process -Name 'aac3572mbhal_x86' -Force", text)
-        self.assertNotIn("Stop-Process -Name 'openrgb'", text)
+        self.assertIn("Stop-Service -Name 'LightingService' -Force", text)
+        self.assertNotIn('Set-Service', text)
+        self.assertIn('Get-Process -Id 31', text)
+        self.assertIn("$_.ProcessName -eq 'Aac3572MbHal_x86'", text)
         self.assertIn('$_.Id -ne $server', text)
+
+    def test_elevated_stop_checks_the_windows_process_list_before_reporting_success(self):
+        from conflicts import stop_now
+        found = self.run_analyse(procs={'armourysocketserver.exe'})
+        found[0]['process_ids'] = [(123, 'ArmourySocketServer.exe')]
+        win32api = SimpleNamespace(GetSystemDirectory=lambda: r'C:\Windows\System32')
+        with patch.dict(sys.modules, win32api=win32api), \
+             patch('conflicts._run_elevated', return_value=True) as elevate, \
+             patch('conflicts.find_conflicts', side_effect=[found, []]):
+            with self.assertRaisesRegex(RuntimeError, 'ainda detecta'):
+                stop_now(found, r'C:\ControleLED')
+            self.assertTrue(stop_now(found, r'C:\ControleLED'))
+        executable, args = elevate.call_args.args
+        self.assertIn('System32', executable)
+        script = base64.b64decode(args.split()[-1]).decode('utf-16-le')
+        self.assertIn('Get-Process -Id 123', script)
+        self.assertNotIn('Get-NetTCPConnection', script)
+
+    def test_elevated_stop_cancellation_preserves_current_state(self):
+        from conflicts import stop_now
+        found = self.run_analyse(procs={'armourysocketserver.exe'})
+        win32api = SimpleNamespace(GetSystemDirectory=lambda: r'C:\Windows\System32')
+        with patch.dict(sys.modules, win32api=win32api), \
+             patch('conflicts._run_elevated', return_value=False), \
+             patch('conflicts.find_conflicts') as detect:
+            self.assertFalse(stop_now(found, r'C:\ControleLED'))
+        detect.assert_not_called()
 
 
 class RemovalTests(unittest.TestCase):

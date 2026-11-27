@@ -7,7 +7,7 @@ from tkinter import ttk
 
 from automation import (ACTIONS, WHEN, DAY_NAMES, describe_days, describe_selection,
                         new_id, valid_time)
-from conflicts import KNOWN_NAMES
+from conflicts import KNOWN_NAMES, alerts
 from interface import (BG, SURFACE, SURFACE_2, SURFACE_3, TEXT, TEXT_2, MUTED, ACCENT, ACCENT_HOVER, ACCENT_SOFT,
                        ACCENT_TEXT, WARN, WARN_BG, FONT, CHIP_R, RoundBox, PillButton,
                        Switch, ChipGrid, _Canvas, mix)
@@ -285,20 +285,20 @@ class ConflictsWindow:
         _label(top, 'Programas que interferem nos LEDs', size=15, bold=True).pack(anchor='w')
         intro = RoundBox(top, radius=16, pad=12, fill=WARN_BG, outline='#5a4320')
         intro.pack(fill='x', pady=(10, 0))
-        _label(intro.body, 'Só um programa pode controlar os LEDs de cada vez. Para o Controle LED '
-               'funcionar corretamente, remova todo e qualquer outro programa que controle o RGB '
-               'da placa-mãe e das memórias. Fechar não basta: eles voltam ao reiniciar.',
+        _label(intro.body, 'Use um controlador de iluminação por vez. Para localizar um processo, '
+               'procure o executável ou o PID na aba Detalhes do Gerenciador de Tarefas. '
+               'O Windows pede permissão ao parar ou desinstalar componentes.',
                fg=WARN, wraplength=520).pack(anchor='w')
         buttons = tk.Frame(top, bg=BG)
         buttons.pack(fill='x', pady=(10, 0))
-        for text, key, fill, fg in [('Parar agora', 'stop', WARN, '#2a1c05'),
+        for text, key, fill, fg in [('Parar como administrador', 'stop', WARN, '#2a1c05'),
                                     ('Aplicativos instalados', 'settings', SURFACE_2, TEXT),
                                     ('Verificar de novo', 'recheck', SURFACE_2, TEXT)]:
             b = PillButton(buttons, text, actions[key], height=36, fill=fill,
                            hover=mix(fill, '#ffffff', 0.15), fg=fg, font=(FONT, 9, 'bold'))
             b.pack(side='left', expand=True, fill='x', padx=3)
         self.state = tk.StringVar()
-        _label(top, textvariable=self.state, fg=MUTED).pack(anchor='w', pady=(8, 0))
+        _label(top, textvariable=self.state, fg=MUTED, wraplength=520).pack(anchor='w', pady=(8, 0))
         self.area = ScrollArea(self.win)
         self.area.pack(fill='both', expand=True, padx=(18, 4), pady=(0, 12))
 
@@ -312,11 +312,10 @@ class ConflictsWindow:
         self.area.clear()
         body = self.area.body
         when = time.strftime('%H:%M:%S')
-        serious = [f for f in findings if f.get('severity') != 'leftover']
+        serious = alerts(findings)
         self.state.set(f'Verificado às {when}: ' + (
-            ', '.join(f['name'] for f in serious) + ' ainda interferindo.' if serious else
-            'nenhum programa interferindo nos LEDs.'
-            + (' Há restos inativos (remover é opcional).' if findings else '')))
+            'possíveis conflitos encontrados.' if serious else
+            'nenhum conflito de iluminação detectado.'))
         if not serious:
             ok = RoundBox(body, fill=mix(SURFACE, OK, 0.12))
             ok.pack(fill='x', pady=(0, 10))
@@ -330,7 +329,8 @@ class ConflictsWindow:
             _label(head, f['name'], size=11, bold=True).pack(side='left')
             severity = f.get('severity', 'active' if f['active'] else 'installed')
             badge, colour = {'active': ('ATIVO AGORA', DANGER), 'installed': ('INSTALADO', WARN),
-                             'leftover': ('RESTOS INATIVOS · OPCIONAL', MUTED)}[severity]
+                             'leftover': ('COMPONENTES INATIVOS', MUTED),
+                             'auxiliary': ('PROCESSOS AUXILIARES', MUTED)}[severity]
             _label(head, badge, fg=colour, bold=True).pack(side='right')
             if severity == 'installed':
                 _label(card.body, 'Não está rodando agora, mas pode voltar a mudar as cores quando '
@@ -340,8 +340,13 @@ class ConflictsWindow:
                        '(não aparecem em Configurações nem na Loja) que nada mais inicia, então não '
                        'mudam as cores. Pode deixar como está ou remover para limpar.',
                        fg=MUTED, wraplength=500).pack(anchor='w', pady=(6, 0))
+            if severity == 'auxiliary':
+                _label(card.body, 'O Windows lista estes componentes em segundo plano. '
+                       'O diagnóstico não encontrou um controlador de iluminação ativo da ASUS.',
+                       fg=MUTED, wraplength=500).pack(anchor='w', pady=(6, 0))
             if f['running']:
-                _label(card.body, 'Rodando: ' + ', '.join(sorted(set(f['running']))), fg=MUTED,
+                processes = [f'{name} (PID {pid})' for pid, name in f.get('process_ids', ())]
+                _label(card.body, ', '.join(processes or sorted(set(f['running']))), fg=MUTED,
                        wraplength=500).pack(anchor='w', pady=(6, 0))
             if f['services']:
                 _label(card.body, 'Serviços: ' + ', '.join(
@@ -356,7 +361,7 @@ class ConflictsWindow:
                 top.pack(fill='x', pady=(10, 0))
                 _label(top, f'{len(grouped)} componente(s) instalado(s)', fg=TEXT_2,
                        bold=True).pack(side='left')
-                optional = f.get('severity') == 'leftover'
+                optional = severity in ('leftover', 'auxiliary')
                 _small(top, 'Remover todos', lambda c=every, f=f: self.actions['remove'](c, [f]),
                        fill=SURFACE_3 if optional else WARN, fg=TEXT if optional else '#2a1c05',
                        width=120).pack(side='right')
@@ -370,6 +375,8 @@ class ConflictsWindow:
                 row.pack(fill='x', pady=(6, 0))
                 _label(row, '• ' + pkg.split('_')[0] + ' (Microsoft Store)').pack(side='left')
                 _small(row, 'Abrir', self.actions['settings']).pack(side='right')
+            if severity == 'auxiliary':
+                continue
             if severity == 'leftover':
                 _label(card.body, 'Dica: na BIOS, deixe "Download & Install ARMOURY CRATE app" em '
                        'Disabled para o Windows não reinstalar o Armoury Crate.',

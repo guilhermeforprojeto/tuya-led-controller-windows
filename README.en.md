@@ -23,6 +23,7 @@ The UI is in Portuguese. No prebuilt binary is included in the source package. T
 - Credentials are stored as local plaintext in `%APPDATA%/ControleLED/config.json`. Never commit them.
 - Startup occurs after user login. Closing the window keeps the tray app running; **Sair** exits.
 - LED power-on at startup is optional. Disabled means no change to the existing LED state.
+- Windows startup uses your normal account permissions. The **Parar como administrador** action in RGB troubleshooting requests UAC consent for that operation and checks whether the selected processes stopped. The diagnostic lists executable names and PIDs for comparison in Task Manager's **Details** tab.
 - Shutdown/restart power-off is best effort, limited to about three seconds. It requires the app running and working internet. It cannot handle forced termination or power loss.
 - Optional motherboard and RAM sync through the [OpenRGB](https://openrgb.org/) SDK server (port 6742). Disable Armoury Crate lighting, run OpenRGB as administrator for RAM, start its SDK server, then enable **Sincronizar placa-mãe e memórias** in **Configuração**. The Armoury Crate Aura SDK is not used: current versions enumerate no devices.
 - No Bluetooth, offline LAN control or Google Home API.
